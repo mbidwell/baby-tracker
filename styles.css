@@ -1,9 +1,10 @@
 /* ---------- Tokens: one set per look. Components use these only. ---------- */
+/* Night Shift. Dad Blue by default. data-tone="deep" is the warm, dim 10 PM to 6 AM palette (set by JS). */
 [data-theme="night-shift"] {
   color-scheme: dark;
-  --bg: #151B18; --surface: #1E2823; --surface-2: #27342E; --line: #33433B;
-  --text: #E6E1D3; --muted: #98A39A; --accent: #C9A24B; --accent-2: #7FA38A;
-  --alert: #D9663B; --alert-text: #D9663B; --on-accent: #151B18;
+  --bg: #12171C; --surface: #1A222A; --surface-2: #232D37; --line: #2E3B47;
+  --text: #D5DCE2; --muted: #8A97A4; --accent: #6F93B8; --accent-2: #8FB0A0;
+  --alert: #D9663B; --alert-text: #E07A52; --on-accent: #0F1519; --accent-ink: var(--on-accent);
   --font-head: 'Barlow Condensed', 'Arial Narrow', sans-serif;
   --font-body: 'Barlow', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -12,11 +13,21 @@
   --icon-sw: 1.75; --big: 64px; --head-weight: 600;
   --gauge: block; --art: none;
   --card-feed: var(--surface); --card-diaper: var(--surface); --card-sleep: var(--surface);
-  --sleep-on: #1A2825;
+  --sleep-on: #1D2835;
   --card-text: var(--text); --card-muted: var(--muted);
-  --c-feed: #C9A24B; --c-diaper: #7FA38A; --c-sleep: #8AA4B8; --c-med: #C98F7A; --c-tummy: #B8A27A; --c-measure: #98A39A; --c-note: #98A39A;
-  --gap: 10px; --pad: 14px; --scrim: rgba(5, 8, 6, .66);
+  --c-feed: var(--accent); --c-diaper: var(--accent-2); --c-sleep: #9A92BE; --c-med: #C4917F; --c-tummy: #B5A583; --c-measure: var(--muted); --c-note: var(--muted);
+  --gap: 10px; --pad: 14px; --scrim: rgba(4, 7, 10, .66);
 }
+[data-theme="night-shift"][data-tone="deep"] {
+  --bg: #0E1011; --surface: #15191B; --surface-2: #1C2124; --line: #262D31;
+  --text: #BDB4A4; --muted: #868A8F; --accent: #B07D36; --accent-2: #7E9A88;
+  --alert: #C4552F; --alert-text: #D4663F; --on-accent: #120D05;
+  --sleep-on: #181B1D; --scrim: rgba(3, 4, 4, .7);
+  --c-sleep: #857F9E; --c-med: #A8806F; --c-tummy: #A09478;
+}
+/* Colour changes ease in over 300ms when the tone switches (class is added briefly by JS). */
+.tx, .tx *, .tx *::before, .tx *::after { transition: background-color .3s, color .3s, border-color .3s, fill .3s, stroke .3s !important; }
+
 [data-theme="cozy"], [data-theme="cozy-night"] {
   --font-head: 'Fredoka', system-ui, sans-serif;
   --font-body: 'Nunito', system-ui, sans-serif;
@@ -54,6 +65,8 @@
 /* ---------- Base ---------- */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+html { height: -webkit-fill-available; height: 100dvh; }
+body { min-height: -webkit-fill-available; min-height: 100dvh; }
 body { font-family: var(--font-body); font-size: 16px; line-height: 1.4; -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -65,7 +78,7 @@ h1, h2, h3 { font-family: var(--font-head); font-weight: var(--head-weight); mar
 
 /* The app shell fills the real screen. position:fixed + inset:0 avoids the 100vh/100dvh
    mismatch that left a dead band under the nav in the installed iPhone app. */
-#app { position: fixed; top: 0; right: 0; bottom: 0; left: 0; max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; background: var(--bg); }
+#app { position: fixed; height: auto; top: 0; right: 0; bottom: 0; left: 0; max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; background: var(--bg); }
 header.top { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: calc(10px + env(safe-area-inset-top)) 16px 8px; }
 header.top h1 { font-size: 28px; line-height: 1.1; }
 header.top h1 small { font-family: var(--font-body); font-weight: 500; font-size: 15px; color: var(--muted); margin-left: 6px; }
@@ -165,11 +178,11 @@ main#main { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 16px 2
 .quick .btn.primary { box-shadow: none; }
 .quick .btn.asleep { background: var(--surface); color: var(--muted); }
 .quick .btn.asleep .ic { color: var(--accent-2); opacity: .7; }
-nav.tabs { display: grid; grid-template-columns: repeat(4, 1fr); padding: 0 8px; border-top: 1px solid var(--line); }
+nav.tabs { overflow: hidden; display: grid; grid-template-columns: repeat(4, 1fr); padding: 0 8px; border-top: 1px solid var(--line); }
 nav.tabs button { min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; border-radius: var(--r-btn); position: relative; }
 nav.tabs button[aria-current="page"] { color: var(--text); }
 nav.tabs button[aria-current="page"] .ic { color: var(--accent); }
-nav.tabs button[aria-current="page"]::before { content: ''; position: absolute; top: 0; left: 30%; right: 30%; height: 2px; background: var(--accent); border-radius: 0 0 2px 2px; }
+nav.tabs button[aria-current="page"]::after { content: ''; position: absolute; bottom: 3px; left: 50%; width: 24px; height: 3px; margin-left: -12px; background: var(--accent); border-radius: 12px; }
 
 /* ---------- Sheets ---------- */
 .scrim { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: var(--scrim); z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
@@ -244,3 +257,7 @@ pre.summary { white-space: pre-wrap; font-family: var(--font-body); font-size: 1
   #toast, .status.sleep { transition: none; }
   .btn:active { transform: none; }
 }
+
+/* Temporary layout readout (round 3 diagnosis). Remove after the numbers are in. */
+.dbg { font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; background: var(--surface-2); color: var(--text); border: var(--border); border-radius: var(--r-btn); padding: 10px; margin: 0; }
+#sa-probe { position: fixed; left: 0; top: 0; width: 0; height: 0; visibility: hidden; padding-bottom: env(safe-area-inset-bottom); padding-top: env(safe-area-inset-top); }

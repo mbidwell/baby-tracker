@@ -94,7 +94,15 @@ function displayName() {
   if (n) return n;
   return S.user && S.user.email ? S.user.email.split('@')[0] : '';
 }
-const who = (e) => (e.created_by && S.settings['name:' + e.created_by]) || e.created_by_name || '';
+// Names are resolved at display time from the settings table, so no entry is rewritten.
+// A creator with no name set shows as "Partner" instead of an email prefix.
+const who = (e) => {
+  if (!e.created_by) return e.created_by_name || '';
+  const n = S.settings['name:' + e.created_by];
+  if (n) return n;
+  if (S.user && e.created_by === S.user.id) return displayName();
+  return 'Partner';
+};
 const babyName = () => S.settings.baby_name || 'Baby';
 const isCozy = () => document.documentElement.dataset.theme !== 'night-shift';
 
@@ -113,10 +121,23 @@ const openOf = (type) => S.events.find((e) => e.type === type && !e.ended_at);
 /* ============================================================
    Theme
    ============================================================ */
+// Night Shift tone: Dad Blue by day, Deep Night (warm, dim) from 10 PM to 6 AM. Per device.
+function currentTone() {
+  const pref = ls.get('bt_tone', 'auto');
+  if (pref === 'blue') return 'blue';
+  if (pref === 'deep') return 'deep';
+  const h = new Date().getHours();
+  return (h >= 22 || h < 6) ? 'deep' : 'blue';
+}
 function applyTheme() {
+  const root = document.documentElement;
   let t = ls.get('bt_theme', 'night-shift');
   if (t === 'cozy-auto') { const h = new Date().getHours(); t = (h >= 20 || h < 6) ? 'cozy-night' : 'cozy'; }
-  if (document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
+  const tone = currentTone();
+  if (root.dataset.theme !== t || root.dataset.tone !== tone) {
+    if (root.dataset.tone) { root.classList.add('tx'); clearTimeout(applyTheme.tt); applyTheme.tt = setTimeout(() => root.classList.remove('tx'), 400); }
+    root.dataset.theme = t; root.dataset.tone = tone;
+  }
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
   const m = document.querySelector('meta[name="theme-color"]');
   if (m && bg) m.setAttribute('content', bg);
@@ -780,7 +801,7 @@ function feedSheet() {
   openSheet('Log feed',
     (lastOz ? '<button class="chip" style="min-height:48px;align-self:flex-start" data-same="1">Same as last (' + fmtOz(lastOz) + ' oz)</button>' : '') +
     '<div class="stepper"><button class="btn round" data-s="dec" aria-label="Less formula">' + ic('minus') + '</button><div class="oz"><span id="oz">' + fmtOz(ctx.oz) + '</span><small>oz</small></div><button class="btn round" data-s="inc" aria-label="More formula">' + ic('plus') + '</button></div>' +
-    '<div class="chips">' + [1, 2, 3, 4].map((n) => '<button class="chip" data-oz="' + n + '">' + n + ' oz</button>').join('') + '</div>' +
+    '<div class="chips scroll">' + [1, 2, 3, 4, 5, 6, 8].map((n) => '<button class="chip" data-oz="' + n + '">' + n + ' oz</button>').join('') + '</div>' +
     timeField() +
     '<label class="toggle"><input type="checkbox" id="spit"> Spit-up</label>' +
     '<input type="text" id="note" placeholder="Note (optional)" aria-label="Note">' +
@@ -1076,6 +1097,41 @@ function calendarSheet(id) {
 }
 
 /* ---------- Settings, look, and your name ---------- */
+function toneHtml() {
+  const cur = ls.get('bt_tone', 'auto');
+  return '<div class="field"><span>Night Shift color (this phone)</span><div class="chips" id="tones">' +
+    [['auto', 'Auto'], ['blue', 'Dad Blue'], ['deep', 'Deep Night']].map((t) => '<button type="button" class="chip' + (cur === t[0] ? ' on' : '') + '" data-tone="' + t[0] + '">' + t[1] + '</button>').join('') +
+    '</div><p class="note-small" style="margin:0">Auto is Dad Blue by day and a dim amber from 10 PM to 6 AM.</p></div>';
+}
+function wireTone(el) {
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tone]');
+    if (!b) return;
+    ls.set('bt_tone', b.dataset.tone);
+    applyTheme();
+    el.querySelectorAll('[data-tone]').forEach((x) => x.classList.toggle('on', x === b));
+  });
+}
+/* Temporary layout readout (round 3). Remove once the numbers are in. */
+function layoutReadout() {
+  let probe = document.getElementById('sa-probe');
+  if (!probe) { probe = document.createElement('div'); probe.id = 'sa-probe'; document.body.appendChild(probe); }
+  const cs = getComputedStyle(probe);
+  const r = (sel) => { const n = document.querySelector(sel); return n ? Math.round(n.getBoundingClientRect().bottom * 10) / 10 : 'n/a'; };
+  const vv = window.visualViewport;
+  return [
+    'innerHeight: ' + innerHeight,
+    'visualViewport.height: ' + (vv ? Math.round(vv.height * 10) / 10 : 'n/a'),
+    'screen.height: ' + screen.height,
+    'safe-area bottom: ' + cs.paddingBottom + '   top: ' + cs.paddingTop,
+    'nav bottom: ' + r('nav.tabs'),
+    'quick bar bottom: ' + r('.quick'),
+    '#app bottom: ' + r('#app'),
+    'bottombar bottom: ' + r('.bottombar'),
+    'standalone: ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches),
+    'build: bt-v3'
+  ].join('\n');
+}
 function lookHtml(current) {
   return '<div class="stack" id="looks">' + THEMES.map((t) =>
     '<button class="btn' + (current === t[0] ? ' primary' : '') + '" data-look="' + t[0] + '" style="justify-content:space-between"><span>' + t[1] + '</span><span style="font-weight:400;font-size:14px">' + t[2] + '</span></button>').join('') + '</div>';
@@ -1116,14 +1172,17 @@ function settingsSheet() {
     '<div class="field"><span>Birth date and time</span>' + dtHtml('sb', birth) + '</div>' +
     '<label class="field">Target hours between feeds<input type="number" inputmode="decimal" step="0.25" min="1" id="s-int" value="' + esc(S.settings.feed_interval_target_hours || '3') + '"></label>' +
     '<label class="field">Your name<input type="text" id="s-me" value="' + esc(S.settings[myNameKey()] || '') + '" placeholder="' + esc(S.user.email.split('@')[0]) + '"></label>' +
-    '<div class="field"><span>Look (this phone)</span>' + lookHtml(ls.get('bt_theme', 'night-shift')) + '</div>' +
+    '<div class="field"><span>Look (this phone)</span>' + lookHtml(ls.get('bt_theme', 'night-shift')) + '</div>' + toneHtml() +
+    '<div class="field"><span>Layout readout (temporary)</span><pre class="dbg" id="dbg">' + esc(layoutReadout()) + '</pre><button type="button" class="chip" data-s="dbg-refresh" style="align-self:flex-start">Refresh readout</button></div>' +
     '<button class="btn primary big" data-s="save">Save settings</button>' +
     '<button class="btn ghost big" data-s="signout">Sign out</button>',
     (el, close) => {
+      wireTone(el);
       wireLook(el, () => { render(); el.querySelectorAll('[data-look]').forEach((x) => x.classList.toggle('primary', x.dataset.look === ls.get('bt_theme', 'night-shift'))); });
       el.addEventListener('click', async (e) => {
         const b = e.target.closest('[data-s]');
         if (!b) return;
+        if (b.dataset.s === 'dbg-refresh') { $('#dbg', el).textContent = layoutReadout(); return; }
         if (b.dataset.s === 'signout') { close(); await sb.auth.signOut(); return; }
         if (b.dataset.s === 'save') {
           setSetting('baby_name', $('#s-name', el).value.trim());
@@ -1225,6 +1284,7 @@ setInterval(() => { if (S.user && qLoad().length) flush(); updateSyncUI(); }, 50
 window.addEventListener('online', () => { flush().then(() => S.user && loadAll().then(render)); updateSyncUI(); });
 window.addEventListener('offline', updateSyncUI);
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') applyTheme();
   if (document.visibilityState === 'visible' && S.user && S.started) { flush().then(() => loadAll().then(render)); }
 });
 

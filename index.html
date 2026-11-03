@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en" data-theme="night-shift">
+<html lang="en" data-theme="night-shift" data-tone="blue">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Baby tracker</title>
-<meta name="theme-color" content="#151B18">
+<meta name="theme-color" content="#12171C">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Baby">
@@ -23,6 +23,9 @@
       var t = localStorage.getItem('bt_theme') || 'night-shift';
       if (t === 'cozy-auto') { var h = new Date().getHours(); t = (h >= 20 || h < 6) ? 'cozy-night' : 'cozy'; }
       document.documentElement.setAttribute('data-theme', t);
+      var tp = localStorage.getItem('bt_tone') || 'auto', hr = new Date().getHours();
+      if (tp === 'auto') tp = (hr >= 22 || hr < 6) ? 'deep' : 'blue';
+      document.documentElement.setAttribute('data-tone', tp);
     } catch (e) {}
   })();
 </script>
