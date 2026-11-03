@@ -1206,7 +1206,7 @@ function layoutReadout() {
   dbgSnap('readout opened');
   const probe = document.getElementById('sa-probe') || (() => { const d = document.createElement('div'); d.id = 'sa-probe'; document.body.appendChild(d); return d; })();
   const cs = getComputedStyle(probe);
-  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v5\n' +
+  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v6\n' +
     'viewport fix: ' + (document.documentElement.hasAttribute('data-vfix') ? 'ACTIVE (' + document.documentElement.style.getPropertyValue('--app-h') + ')' : 'not active') + '\n' +
     'ms  event  innerH vvH screenH clientH mainSH/CH navBottom appBottom fix\n';
   return head + DBG.map((r) => r.t + ' ' + r.tag + ' ' + r.iH + ' ' + r.vv + ' ' + r.sH + ' ' + r.cH + ' ' + r.mSH + '/' + r.mCH + ' ' + r.nav + ' ' + r.app + ' ' + r.fix).join('\n');

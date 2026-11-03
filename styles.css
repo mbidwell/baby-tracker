@@ -286,5 +286,5 @@ pre.summary { white-space: pre-wrap; font-family: var(--font-body); font-size: 1
 
 /* iOS standalone: when the layout viewport is shorter than the screen (see fixViewport in app.js), size to the screen. */
 html[data-vfix] #app, html[data-vfix] .scrim { bottom: auto; height: var(--app-h); }
-html[data-vfix] .sheet { position: relative; }
-html[data-vfix] #toast { bottom: calc(150px + env(safe-area-inset-top) + env(safe-area-inset-bottom)); }
+/* Sheets stay anchored to the layout viewport (iOS clips them there); their background is extended downward to cover the strip under it. */
+html[data-vfix] .sheet { box-shadow: 0 80px 0 var(--bg); }
