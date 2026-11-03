@@ -22,18 +22,27 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx
 const pad2 = (n) => String(n).padStart(2, '0');
 const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 const dayKey = (d) => { d = new Date(d); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
-const toLocalInput = (d) => { d = new Date(d); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+const dateVal = (d) => dayKey(d);
+const timeVal = (d) => { d = new Date(d); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
 const fmtTime = (d) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const fmtDay = (d) => new Date(d).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
 const fmtShort = (d) => new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric' });
 const fmtDateTime = (d) => fmtShort(d) + ', ' + fmtTime(d);
 const fmtOz = (n) => (Math.round(n * 10) / 10).toString();
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
 
+// "2h 14m" style, minutes padded (live timers)
 function fmtDur(ms) {
   ms = Math.max(0, ms);
   const m = Math.floor(ms / MIN), h = Math.floor(m / 60), r = m % 60;
   if (h > 0) return h + 'h ' + pad2(r) + 'm';
   return m + 'm';
+}
+// "16m", "1h 20m", "2h" (totals, charts, summaries)
+function fmtHM(ms) {
+  const m = Math.round(Math.max(0, ms) / MIN), h = Math.floor(m / 60), r = m % 60;
+  if (h === 0) return m + 'm';
+  return r === 0 ? h + 'h' : h + 'h ' + r + 'm';
 }
 function fmtCountdown(ms) {
   const a = Math.abs(ms);
@@ -41,6 +50,19 @@ function fmtCountdown(ms) {
   if (a >= 48 * HR) t = Math.floor(a / DAY) + 'd ' + Math.floor((a % DAY) / HR) + 'h';
   else t = fmtDur(a);
   return ms >= 0 ? 'in ' + t : t + ' overdue';
+}
+
+/* date + time fields. Two separate inputs avoid the native datetime-local pill that overflows on iOS. */
+function dtHtml(id, d) {
+  return '<div class="dt" id="' + id + '-dt"><input type="date" id="' + id + '-d" aria-label="Date" value="' + (d ? dateVal(d) : '') + '"><input type="time" id="' + id + '-t" aria-label="Time" value="' + (d ? timeVal(d) : '') + '"></div>';
+}
+function dtVal(el, id) {
+  const dv = $('#' + id + '-d', el).value, tv = $('#' + id + '-t', el).value;
+  if (!dv) return null;
+  const [y, m, d] = dv.split('-').map(Number);
+  const [hh, mm] = (tv || '00:00').split(':').map(Number);
+  const out = new Date(y, m - 1, d, hh || 0, mm || 0);
+  return isNaN(out) ? null : out;
 }
 
 /* ============================================================
@@ -55,6 +77,8 @@ const S = {
   tlDay: startOfDay(new Date()),
   sumRange: '24h',
   channel: null,
+  rt: 'idle',
+  rtSince: Date.now(),
   started: false
 };
 
@@ -63,11 +87,14 @@ const ls = {
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 };
 
+// Display names live in the settings table as name:<user id>, so both phones see the same names.
+const myNameKey = () => 'name:' + (S.user ? S.user.id : '');
 function displayName() {
-  const n = (ls.get('bt_name', '') || '').trim();
+  const n = (S.settings[myNameKey()] || ls.get('bt_name', '') || '').trim();
   if (n) return n;
   return S.user && S.user.email ? S.user.email.split('@')[0] : '';
 }
+const who = (e) => (e.created_by && S.settings['name:' + e.created_by]) || e.created_by_name || '';
 const babyName = () => S.settings.baby_name || 'Baby';
 const isCozy = () => document.documentElement.dataset.theme !== 'night-shift';
 
@@ -91,7 +118,7 @@ function applyTheme() {
   if (t === 'cozy-auto') { const h = new Date().getHours(); t = (h >= 20 || h < 6) ? 'cozy-night' : 'cozy'; }
   if (document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-  let m = document.querySelector('meta[name="theme-color"]');
+  const m = document.querySelector('meta[name="theme-color"]');
   if (m && bg) m.setAttribute('content', bg);
 }
 const THEMES = [
@@ -107,6 +134,9 @@ const THEMES = [
 const ICONS = {
   feed: '<path d="M10 3h4M10.5 3v2.5h3V3M9 7.5h6a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9.5a2 2 0 0 1 2-2zM7 12.5h3M7 16.5h3"/>',
   diaper: '<path d="M12 3c3 4 5.5 7 5.5 10a5.5 5.5 0 0 1-11 0C6.5 10 9 7 12 3z"/>',
+  wet: '<path d="M12 3c3 4 5.5 7 5.5 10a5.5 5.5 0 0 1-11 0C6.5 10 9 7 12 3z"/>',
+  dirty: '<path d="M5 20.5c-1.4 0-2.3-1-2.3-2.3s1-2.3 2.3-2.3h14c1.3 0 2.3 1 2.3 2.3s-.9 2.3-2.3 2.3z"/><path d="M7.2 15.9c-.9-.2-1.5-1-1.5-1.9 0-1.1.9-2 2-2h8.6c1.1 0 2 .9 2 2 0 .9-.6 1.7-1.5 1.9"/><path d="M9.2 12c-.6-.3-1-.9-1-1.6 0-.9.7-1.7 1.7-1.7h4.2c1 0 1.7.8 1.7 1.7 0 .7-.4 1.3-1 1.6"/><path d="M12 8.7c0-2 .8-3.6 2.6-4.7"/>',
+  both: '<path d="M8 3c2.2 3 4 5.2 4 7.6a4 4 0 0 1-8 0C4 8.2 5.8 6 8 3z"/><path d="M12.5 21.5h7.2c1 0 1.8-.8 1.8-1.8s-.8-1.8-1.8-1.8h-7.2c-1 0-1.8.8-1.8 1.8s.8 1.8 1.8 1.8z"/><path d="M13.8 17.9c-.7-.2-1.1-.7-1.1-1.4 0-.8.6-1.4 1.4-1.4h4.8c.8 0 1.4.6 1.4 1.4 0 .7-.4 1.2-1.1 1.4M16.5 15c0-1.3.6-2.3 1.8-3"/>',
   sleep: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
   tummy: '<path d="M9 3.5c-1.4 0-2 1.8-2 3.8s.6 3 1.6 3.2M15 3.5c1.4 0 2 1.8 2 3.8s-.6 3-1.6 3.2"/><circle cx="12" cy="15" r="5.5"/><path d="M10 14.5h.01M14 14.5h.01"/>',
   med: '<rect x="3" y="8.5" width="18" height="7" rx="3.5" transform="rotate(-45 12 12)"/><path d="M9.5 14.5l5-5"/>',
@@ -117,7 +147,7 @@ const ICONS = {
   timeline: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
   tasks: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/>',
   trends: '<path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/>',
-  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/>',
+  gear: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   minus: '<path d="M5 12h14"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
@@ -154,7 +184,7 @@ let flushing = false;
 function isNetError(err) {
   if (!err) return false;
   if (!navigator.onLine) return true;
-  return err.status === 0 || /fetch|network|load failed|timeout/i.test(err.message || '');
+  return err.status === 0 || err.code === 'TIMEOUT' || /fetch|network|load failed|timeout/i.test(err.message || '');
 }
 
 async function runOp(op) {
@@ -165,6 +195,8 @@ async function runOp(op) {
   if (op.op === 'delete') return t.delete().eq('id', op.id);
   return { error: null };
 }
+// A hung request must not wedge the queue forever.
+const withTimeout = (p, ms) => Promise.race([p, new Promise((res) => setTimeout(() => res({ error: { code: 'TIMEOUT', message: 'timeout' } }), ms))]);
 
 async function flush() {
   if (flushing || !S.user) return;
@@ -173,7 +205,7 @@ async function flush() {
     let q = qLoad();
     while (q.length) {
       let res;
-      try { res = await runOp(q[0]); } catch (e) { break; }
+      try { res = await withTimeout(runOp(q[0]), 12000); } catch (e) { break; }
       if (res && res.error) {
         if (isNetError(res.error)) break;
         if (res.error.code !== '23505') toast('Could not save one change: ' + res.error.message);
@@ -182,15 +214,16 @@ async function flush() {
     }
   } finally {
     flushing = false;
-    updateOnlineUI();
+    updateSyncUI();
   }
 }
 
 function enqueue(op) {
+  op.ts = Date.now();
   const q = qLoad(); q.push(op); qSave(q);
   cacheSave();
   flush();
-  updateOnlineUI();
+  updateSyncUI();
 }
 
 let cacheTimer;
@@ -201,11 +234,34 @@ function cacheSave() {
   }, 300);
 }
 
-function updateOnlineUI() {
-  const el = $('#offline-pill');
+/* Sync badge. Hidden when healthy. Shows only for a real offline state, a stuck queue,
+   or a realtime connection that has been down a while. "Synced" flashes 2s after a stuck queue clears. */
+let pillWasShown = false, syncedTimer = null, syncedUntil = 0;
+function syncState() {
+  const q = qLoad();
+  const online = navigator.onLine;
+  const oldest = q.length ? Date.now() - (q[0].ts || 0) : 0;
+  if (q.length && (!online || oldest > 4000)) return { text: (online ? '' : 'Offline, ') + q.length + ' waiting to sync', ok: false };
+  if (!online) return { text: 'Offline', ok: false };
+  if (S.started && S.rt !== 'SUBSCRIBED' && S.rt !== 'idle' && Date.now() - S.rtSince > 8000) return { text: 'Reconnecting', ok: false };
+  if (Date.now() < syncedUntil) return { text: 'Synced', ok: true };
+  return null;
+}
+function updateSyncUI() {
+  const el = $('#sync-pill');
+  const st = syncState();
+  if (pillWasShown && !st) {
+    // went from showing a problem to healthy: flash Synced for 2s
+    const was = el && el.dataset.bad === '1';
+    if (was) { syncedUntil = Date.now() + 2000; clearTimeout(syncedTimer); syncedTimer = setTimeout(updateSyncUI, 2100); return updateSyncUI(); }
+  }
+  pillWasShown = !!(st && !st.ok);
   if (!el) return;
-  const pending = qLoad().length;
-  el.hidden = navigator.onLine && pending === 0;
+  if (!st) { el.hidden = true; el.dataset.bad = '0'; return; }
+  el.hidden = false;
+  el.textContent = st.text;
+  el.classList.toggle('ok', st.ok);
+  el.dataset.bad = st.ok ? '0' : '1';
 }
 
 function addEvent(row) {
@@ -296,7 +352,12 @@ function subscribe() {
     else S.settings[p.new.key] = p.new.value;
     cacheSave(); render();
   });
-  ch.subscribe();
+  ch.subscribe((status) => {
+    const was = S.rt;
+    S.rt = status; S.rtSince = Date.now();
+    if (status === 'SUBSCRIBED' && was !== 'idle' && was !== 'SUBSCRIBED') { flush().then(() => loadAll()).then(render); }
+    updateSyncUI();
+  });
   S.channel = ch;
 }
 
@@ -308,7 +369,8 @@ function feedGapMs() {
   if (f.length >= 2) {
     let sum = 0;
     for (let i = 0; i < f.length - 1; i++) sum += new Date(f[i].started_at) - new Date(f[i + 1].started_at);
-    return sum / (f.length - 1);
+    // Recent pattern only, kept in a sane newborn range so one long overnight gap can't blow up the gauge.
+    return Math.min(4 * HR, Math.max(2 * HR, sum / (f.length - 1)));
   }
   return (parseFloat(S.settings.feed_interval_target_hours) || 3) * HR;
 }
@@ -352,19 +414,19 @@ function render() {
 
   app.innerHTML =
     '<header class="top"><h1>' + esc(babyName()) + (dol ? '<small>day ' + dol + '</small>' : '') + '</h1>' +
-    '<div style="display:flex;align-items:center;gap:6px"><span class="pill" id="offline-pill" hidden>Offline, will sync</span>' +
+    '<div style="display:flex;align-items:center;gap:6px"><span class="pill" id="sync-pill" role="status" hidden></span>' +
     '<button class="iconbtn" data-act="settings" aria-label="Settings">' + ic('gear') + '</button></div></header>' +
     '<main id="main">' + body + '</main>' +
-    '<div class="quick">' +
+    '<div class="bottombar"><div class="quick">' +
     '<button class="btn primary" data-act="feed">' + ic('feed') + 'Feed</button>' +
-    '<button class="btn primary" data-act="diaper">' + ic('diaper') + 'Diaper</button>' +
-    '<button class="btn primary" data-act="sleep-toggle">' + ic('sleep') + (sleeping ? 'Wake' : 'Sleep') + '</button>' +
+    '<button class="btn" data-act="diaper">' + ic('diaper') + 'Diaper</button>' +
+    '<button class="btn' + (sleeping ? ' asleep' : '') + '" data-act="sleep-toggle">' + ic('sleep') + (sleeping ? 'Wake' : 'Sleep') + '</button>' +
     '<button class="btn" data-act="more">' + ic('more') + 'More</button></div>' +
     '<nav class="tabs" aria-label="Sections">' +
-    tabs.map((t) => '<button data-act="tab" data-tab="' + t[0] + '"' + (S.tab === t[0] ? ' aria-current="page"' : '') + '>' + ic(t[2]) + t[1] + '</button>').join('') + '</nav>';
+    tabs.map((t) => '<button data-act="tab" data-tab="' + t[0] + '"' + (S.tab === t[0] ? ' aria-current="page"' : '') + '>' + ic(t[2]) + t[1] + '</button>').join('') + '</nav></div>';
   const main = $('#main');
   if (main) main.scrollTop = scroll;
-  updateOnlineUI();
+  updateSyncUI();
 }
 
 function homeHtml() {
@@ -374,36 +436,50 @@ function homeHtml() {
   const gap = feedGapMs();
   let html = '';
 
-  // Feed card
+  // Feed card (the hero)
   if (lf) {
     const since = now - new Date(lf.started_at).getTime();
-    const pct = Math.min(1, since / gap);
     const next = new Date(lf.started_at).getTime() + gap;
     const over = now > next;
+    const scaleH = Math.max(3, Math.ceil(gap / HR));
+    const scale = scaleH * HR;
+    const pct = Math.min(1, since / scale);
+    let ticks = '', labels = '';
+    for (let i = 1; i <= scaleH; i++) {
+      const left = (i / scaleH * 100).toFixed(2);
+      if (i < scaleH) ticks += '<i style="left:' + left + '%"></i>';
+      labels += '<span style="left:' + left + '%">' + i + 'h</span>';
+    }
     html += '<section class="card status feed' + (over ? ' alert' : '') + '"><div class="label">' + ic('feed') + 'Last feed</div>' +
       '<div class="big">' + fmtDur(since) + '</div>' +
-      '<div class="sub">' + fmtOz(lf.amount_oz || 0) + ' oz · ' + fmtTime(lf.started_at) + (lf.created_by_name ? ' · ' + esc(lf.created_by_name) : '') + '</div>' +
-      '<div class="gauge' + (over ? ' alert' : '') + '" aria-hidden="true"><div class="fill" style="width:' + (pct * 100).toFixed(1) + '%"></div><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></div>' +
+      '<div class="sub">' + fmtOz(lf.amount_oz || 0) + ' oz · ' + fmtTime(lf.started_at) + (who(lf) ? ' · ' + esc(who(lf)) : '') + '</div>' +
+      '<div class="gaugebox" aria-hidden="true"><div class="gauge' + (over ? ' alert' : '') + '"><div class="fill" style="width:' + (pct * 100).toFixed(1) + '%"></div>' + ticks + '<b style="left:' + Math.min(100, gap / scale * 100).toFixed(1) + '%"></b></div>' +
+      '<div class="gauge-labels mono">' + labels + '</div></div>' +
       '<div class="next-line">Next feed around ' + fmtTime(next) + ' (' + (over ? fmtDur(now - next) + ' overdue' : 'in ' + fmtDur(next - now)) + ')</div></section>';
   } else {
     html += '<section class="card status feed"><div class="label">' + ic('feed') + 'Last feed</div><div class="sub" style="margin-top:8px">' +
       (isCozy() ? "Nothing yet today. Log the first feed when you're ready." : 'Nothing logged yet. First feed counts.') + '</div></section>';
   }
 
-  // Diaper + sleep cards
+  // Diaper + sleep cards, same height
   const lastSleepEnd = S.events.find((e) => e.type === 'sleep' && e.ended_at);
   let sleepBig, sleepSub;
-  if (sleepOpen) { sleepBig = 'Asleep ' + fmtDur(now - new Date(sleepOpen.started_at).getTime()); sleepSub = 'Since ' + fmtTime(sleepOpen.started_at); }
-  else if (lastSleepEnd) { sleepBig = 'Awake ' + fmtDur(now - new Date(lastSleepEnd.ended_at).getTime()); sleepSub = 'Woke at ' + fmtTime(lastSleepEnd.ended_at); }
+  if (sleepOpen) { sleepBig = 'Asleep ' + fmtHM(now - new Date(sleepOpen.started_at).getTime()); sleepSub = 'Since ' + fmtTime(sleepOpen.started_at); }
+  else if (lastSleepEnd) { sleepBig = 'Awake ' + fmtHM(now - new Date(lastSleepEnd.ended_at).getTime()); sleepSub = 'Woke at ' + fmtTime(lastSleepEnd.ended_at); }
   else { sleepBig = 'Awake'; sleepSub = 'No sleep logged'; }
+
+  const todayStart = startOfDay(new Date()).getTime();
+  const lastOf = (kinds) => S.events.find((e) => e.type === 'diaper' && kinds.includes(e.diaper_kind));
+  const sinceLine = (ev, label) => (ev && new Date(ev.started_at).getTime() >= todayStart) ? 'Last ' + label + ' ' + fmtDur(now - new Date(ev.started_at).getTime()) + ' ago' : 'No ' + label + ' today';
 
   html += '<div class="grid2">' +
     '<section class="card status diaper compact"><div class="label">' + ic('diaper') + 'Last diaper</div>' +
-    (ld ? '<div class="big">' + fmtDur(now - new Date(ld.started_at).getTime()) + '</div><div class="sub">' + cap(ld.diaper_kind) + (ld.created_by_name ? ' · ' + esc(ld.created_by_name) : '') + '</div>'
-        : '<div class="sub" style="margin-top:8px">None yet</div>') + '</section>' +
-    '<section class="card status sleep compact">' + (sleepOpen ? MOON : SUN) + '<div class="label">' + ic('sleep') + 'Sleep</div>' +
+    (ld ? '<div class="big">' + fmtDur(now - new Date(ld.started_at).getTime()) + '</div><div class="sub">' + cap(ld.diaper_kind) + (who(ld) ? ' · ' + esc(who(ld)) : '') + '</div>'
+        : '<div class="sub" style="margin-top:8px">None yet</div>') +
+    '<div class="pushdown minor">' + sinceLine(lastOf(['wet', 'both']), 'wet') + '<br>' + sinceLine(lastOf(['dirty', 'both']), 'dirty') + '</div></section>' +
+    '<section class="card status sleep compact' + (sleepOpen ? ' asleep' : '') + '">' + (sleepOpen ? MOON : SUN) + '<div class="label">' + ic('sleep') + 'Sleep</div>' +
     '<div class="big" style="font-size:calc(var(--big)*.42)">' + sleepBig + '</div><div class="sub">' + sleepSub + '</div>' +
-    '<button class="btn sleep-btn' + (sleepOpen ? '' : ' primary') + '" data-act="sleep-toggle">' + (sleepOpen ? 'Stop' : 'Start') + '</button></section></div>';
+    '<div class="sleep-wrap"><button class="btn sleep-btn" data-act="sleep-toggle" style="width:100%">' + (sleepOpen ? 'Wake' : 'Sleep') + '</button></div></section></div>';
 
   if (tummyOpen) {
     html += '<div class="banner"><span>' + ic('tummy') + ' Tummy time ' + fmtDur(now - new Date(tummyOpen.started_at).getTime()) + '</span><button class="btn primary" data-act="tummy-stop">Stop</button></div>';
@@ -411,10 +487,9 @@ function homeHtml() {
 
   // Today's totals
   const t = dayStats(startOfDay(new Date()));
-  const sl = t.sleepMs;
   html += '<section class="card"><h2>Today</h2><div class="totals">' +
     '<div><b>' + t.feeds + ' · ' + fmtOz(t.oz) + ' oz</b><span>Feeds</span></div>' +
-    '<div><b>' + fmtDur(sl) + '</b><span>Sleep</span></div>' +
+    '<div><b>' + fmtHM(t.sleepMs) + '</b><span>Sleep</span></div>' +
     '<div><b>' + t.wet + '</b><span>Wet diapers</span></div>' +
     '<div><b>' + t.dirty + '</b><span>Dirty diapers</span></div></div></section>';
 
@@ -429,8 +504,6 @@ function homeHtml() {
   return html;
 }
 
-const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
-
 /* ---------- Timeline ---------- */
 function eventTitle(e) {
   return ({ feed: 'Feed', diaper: 'Diaper', sleep: 'Sleep', tummy: 'Tummy time', med: e.label || 'Medication', measure: 'Weight and length', note: e.label || 'Note' })[e.type];
@@ -440,25 +513,29 @@ function eventDetail(e) {
   if (e.type === 'diaper') return cap(e.diaper_kind) + (e.notes ? ' · ' + e.notes : '');
   if (e.type === 'sleep' || e.type === 'tummy') {
     const end = e.ended_at ? new Date(e.ended_at).getTime() : Date.now();
-    return (e.ended_at ? fmtDur(end - new Date(e.started_at).getTime()) : 'Running, ' + fmtDur(end - new Date(e.started_at).getTime())) + (e.notes ? ' · ' + e.notes : '');
+    return (e.ended_at ? fmtHM(end - new Date(e.started_at).getTime()) : 'Running, ' + fmtHM(end - new Date(e.started_at).getTime())) + (e.notes ? ' · ' + e.notes : '');
   }
   if (e.type === 'measure') return [e.weight_lb ? e.weight_lb + ' lb' : '', e.length_in ? e.length_in + ' in' : ''].filter(Boolean).join(' · ') + (e.notes ? ' · ' + e.notes : '');
   return e.notes || '';
 }
+const DOT = { feed: 'var(--c-feed)', diaper: 'var(--c-diaper)', sleep: 'var(--c-sleep)', tummy: 'var(--c-tummy)', med: 'var(--c-med)', measure: 'var(--c-measure)', note: 'var(--c-note)' };
 
 function timelineHtml() {
   const from = S.tlDay.getTime(), to = from + DAY;
   const evs = S.events.filter((e) => { const t = new Date(e.started_at).getTime(); return t >= from && t < to; });
   const today = startOfDay(new Date()).getTime() === from;
   let html = '<div class="daynav"><button class="iconbtn" data-act="day-prev" aria-label="Previous day">' + ic('chevL') + '</button>' +
-    '<label class="date">' + (today ? 'Today, ' + fmtShort(S.tlDay) : fmtDay(S.tlDay)) + '<input type="date" id="dayjump" aria-label="Jump to date" value="' + dayKey(S.tlDay) + '"></label>' +
+    '<label class="date">' + (today ? 'Today, ' + fmtShort(S.tlDay) : fmtDay(S.tlDay)) + '<input type="date" id="dayjump" aria-label="Jump to date" value="' + dateVal(S.tlDay) + '"></label>' +
     '<button class="iconbtn" data-act="day-next" aria-label="Next day"' + (today ? ' disabled style="opacity:.3"' : '') + '>' + ic('chevR') + '</button></div>';
   if (!evs.length) {
     html += '<div class="card empty">' + (today ? (isCozy() ? "Nothing yet today. Log the first feed when you're ready." : 'Nothing logged yet. First feed counts.') : 'Nothing logged this day.') + '</div>';
   } else {
-    html += '<section class="card"><div class="rows">' + evs.map((e) => {
+    const st = dayStats(S.tlDay);
+    html += '<section class="card"><div class="daysum mono">' + st.feeds + ' feed' + (st.feeds === 1 ? '' : 's') + ', ' + fmtOz(st.oz) + ' oz, ' + st.wet + ' wet, ' + st.dirty + ' dirty, ' + fmtHM(st.sleepMs) + ' sleep</div>' +
+      '<div class="rows tl">' + evs.map((e) => {
       const time = (e.type === 'sleep' || e.type === 'tummy') ? fmtTime(e.started_at) + (e.ended_at ? ' – ' + fmtTime(e.ended_at) : ' – now') : fmtTime(e.started_at);
-      return '<button class="row" data-act="edit" data-id="' + e.id + '"><span class="ico">' + ic(e.type) + '</span><span class="mid"><b>' + esc(eventTitle(e)) + '</b><span>' + esc(eventDetail(e)) + '</span></span><span class="time">' + time + (e.created_by_name ? '<br>' + esc(e.created_by_name) : '') + '</span></button>';
+      const icon = e.type === 'diaper' ? (e.diaper_kind || 'diaper') : e.type;
+      return '<button class="row" style="--dotc:' + DOT[e.type] + '" data-act="edit" data-id="' + e.id + '"><span class="dot2"></span><span class="mid"><b>' + ic(icon, 18) + esc(eventTitle(e)) + '</b><span>' + esc(eventDetail(e)) + '</span></span><span class="time">' + time + (who(e) ? '<br>' + esc(who(e)) : '') + '</span></button>';
     }).join('') + '</div></section>';
   }
   return html;
@@ -471,17 +548,24 @@ function recurLabel(t) {
   if (t.recurrence === 'every_n_hours') return 'Every ' + (t.interval_hours || '?') + ' h';
   return '';
 }
+const TASK_PRESETS = [
+  { label: 'Vitamin D, daily', title: 'Vitamin D', rec: 'daily', med: true },
+  { label: 'Weight check', title: 'Weight check' },
+  { label: 'Pediatrician visit (first one)', title: 'First pediatrician visit' },
+  { label: 'Custom' }
+];
 function tasksHtml() {
   const now = Date.now();
   const open = S.tasks.filter((t) => !t.completed_at).sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
   const done = S.tasks.filter((t) => t.completed_at).sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at)).slice(0, 5);
-  let html = '<button class="btn primary big" data-act="task-add">' + ic('plus') + 'Add task</button>';
+  let html = '<button class="btn outline big" data-act="task-add">' + ic('plus') + 'Add task</button>';
   html += '<section class="card"><h2>Upcoming</h2>' + (open.length ? '<div class="rows">' + open.map((t) => {
     const ms = new Date(t.due_at) - now;
     return '<div class="row' + (ms < 0 ? ' overdue' : '') + '"><button class="iconbtn" style="border:1px solid var(--line)" data-act="task-check" data-id="' + t.id + '" aria-label="Mark ' + esc(t.title) + ' done">' + ic('check') + '</button>' +
       '<div class="mid"><b>' + esc(t.title) + '</b><span><span class="cd">' + fmtCountdown(ms) + '</span> · ' + fmtDateTime(t.due_at) + (recurLabel(t) ? ' · ' + recurLabel(t) : '') + '</span></div>' +
       '<button class="iconbtn" data-act="task-cal" data-id="' + t.id + '" aria-label="Add ' + esc(t.title) + ' to calendar">' + ic('calendar') + '</button></div>';
-  }).join('') + '</div>' : '<div class="empty">Nothing scheduled. Add a pediatrician visit or a daily vitamin D.</div>') + '</section>';
+  }).join('') + '</div>' : '<div class="empty">Nothing scheduled yet. Start with one of these:</div><div class="chips" style="margin-top:8px">' +
+    TASK_PRESETS.map((p, i) => '<button class="chip" data-act="task-preset" data-i="' + i + '">' + p.label + '</button>').join('') + '</div>') + '</section>';
   if (done.length) {
     html += '<section class="card"><h2>Done</h2><div class="rows">' + done.map((t) =>
       '<div class="row done" style="min-height:48px"><div class="mid"><b>' + esc(t.title) + '</b><span>' + fmtDateTime(t.completed_at) + '</span></div></div>').join('') + '</div></section>';
@@ -515,22 +599,27 @@ function lastDays(n) {
   for (let i = n - 1; i >= 0; i--) out.push(new Date(today.getTime() - i * DAY));
   return out;
 }
+/* Single-series bars: today in the accent, earlier days muted. Stacked bars: today full strength, earlier days dimmed. */
 function barChart(days, partsFn, labels) {
-  const W = 320, H = 150, base = 120, maxH = 90;
+  const W = 320, H = 124, base = 96, maxH = 66;
   const data = days.map((d) => partsFn(d));
   const totals = data.map((p) => p.reduce((a, b) => a + b, 0));
   const max = Math.max(1, ...totals);
+  const stacked = data[0].length > 1;
   const bw = 28, step = (W - 20) / days.length;
   let g = '';
+  [1, 2 / 3, 1 / 3].forEach((f) => { const y = base - f * maxH; g += '<line class="grid" x1="10" x2="' + (W - 10) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '"/>'; });
+  g += '<line class="grid" x1="10" x2="' + (W - 10) + '" y1="' + base + '" y2="' + base + '"/>';
   data.forEach((parts, i) => {
     const x = 10 + i * step + (step - bw) / 2;
+    const isToday = i === days.length - 1;
     let y = base;
     parts.forEach((v, pi) => {
       const h = (v / max) * maxH;
-      if (h > 0) { y -= h; g += '<rect class="p' + pi + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw + '" height="' + h.toFixed(1) + '" rx="' + (isCozy() ? 8 : 2) + '"/>'; }
+      if (h > 0) { y -= h; g += '<rect class="p' + pi + (isToday ? ' today' : '') + (stacked ? ' stacked' : '') + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw + '" height="' + h.toFixed(1) + '" rx="' + (isCozy() ? 7 : 2) + '"/>'; }
     });
     if (totals[i] > 0) g += '<text class="val" x="' + (x + bw / 2).toFixed(1) + '" y="' + (y - 4).toFixed(1) + '" text-anchor="middle">' + labels.fmt(totals[i], parts) + '</text>';
-    g += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (base + 16) + '" text-anchor="middle">' + days[i].toLocaleDateString([], { weekday: 'short' }) + '</text>';
+    g += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (base + 15) + '" text-anchor="middle">' + days[i].toLocaleDateString([], { weekday: 'short' }) + '</text>';
   });
   return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(labels.aria) + '">' + g + '</svg>';
 }
@@ -554,10 +643,10 @@ function buildSummary(range) {
   const dol = dayOfLife();
   const lines = [
     babyName() + ': ' + r.label.toLowerCase() + ', as of ' + fmtDateTime(new Date()) + (dol ? ' (day ' + dol + ' of life)' : ''),
-    'Feeds: ' + feeds.length + ' total, ' + fmtOz(oz) + ' oz' + (feeds.length ? ', ' + fmtOz(oz / feeds.length) + ' oz per feed' : '') + (r.days > 1 || true ? ', ' + per(feeds.length) + ' per day' : ''),
+    'Feeds: ' + feeds.length + ' total, ' + fmtOz(oz) + ' oz' + (feeds.length ? ', ' + fmtOz(oz / feeds.length) + ' oz per feed' : '') + ', ' + per(feeds.length) + ' per day',
     'Wet diapers: ' + wet + ' (' + per(wet) + ' per day)',
     'Dirty diapers: ' + dirty + ' (' + per(dirty) + ' per day)',
-    'Sleep: ' + (sleepMs / HR).toFixed(1) + ' h total (' + (sleepMs / HR / r.days).toFixed(1) + ' h per day)'
+    'Sleep: ' + fmtHM(sleepMs) + ' total (' + fmtHM(sleepMs / r.days) + ' per day)'
   ];
   const meas = S.events.filter((e) => e.type === 'measure').slice().reverse();
   if (meas.length) {
@@ -571,24 +660,24 @@ function trendsHtml() {
   const days = lastDays(7);
   const stats = days.map((d) => dayStats(d));
   const idx = (d) => days.findIndex((x) => x.getTime() === d.getTime());
+  const daysWithData = days.filter((d) => S.events.some((e) => dayKey(e.started_at) === dayKey(d))).length;
   let html = '';
+  if (daysWithData < 3) html += '<div class="card empty">Not enough data yet. Charts fill in after a few days of logging.</div>';
   const dol = dayOfLife();
   if (dol) {
     const today = stats[6];
     const target = dol <= 5 ? dol : 6;
     const ok = today.wet >= target;
-    html += '<section class="card"><h2>Wet diapers today</h2><div class="target"><span class="dot' + (ok ? '' : ' amber') + '"></span><div><b>' + today.wet + ' of ' + target + (dol <= 5 ? '' : '+') + '</b><div class="note-small">' + (ok ? 'On track for day ' + dol + '.' : 'Not at the day-' + dol + ' minimum yet. The day is not over.') + '</div></div></div>' +
+    html += '<section class="card"><h2>Wet diapers today</h2><div class="target"><span class="dot' + (ok ? '' : ' amber') + '"></span><div><b>' + today.wet + ' wet diaper' + (today.wet === 1 ? '' : 's') + ' today. Goal: ' + target + ' or more.</b></div></div>' +
       '<p class="note-small" style="margin:10px 0 0">General guidance: about 1 wet diaper on day 1, rising by one a day to 6 or more from day 6. Stools turn yellow around day 5. Call the pediatrician with any concerns.</p></section>';
   }
-  html += '<section class="card"><h2>Feeds per day</h2>' +
-    barChart(days, (d) => [stats[idx(d)].oz], { aria: 'Total ounces per day, last 7 days', fmt: (t) => fmtOz(t) }) +
-    '<div class="legend"><span>Total oz per day</span></div></section>';
+  html += '<section class="card"><h2>Formula per day (oz)</h2><div class="sub2">' + stats[6].feeds + ' feed' + (stats[6].feeds === 1 ? '' : 's') + ' today.</div>' +
+    barChart(days, (d) => [stats[idx(d)].oz], { aria: 'Total ounces of formula per day, last 7 days', fmt: (t) => fmtOz(t) }) + '</section>';
   html += '<section class="card"><h2>Diapers per day</h2>' +
     barChart(days, (d) => [stats[idx(d)].wet, stats[idx(d)].dirty], { aria: 'Wet and dirty diapers per day, last 7 days', fmt: (t) => t }) +
     '<div class="legend"><span><i style="background:var(--accent)"></i>Wet</span><span><i style="background:var(--accent-2)"></i>Dirty</span></div></section>';
   html += '<section class="card"><h2>Sleep per day</h2>' +
-    barChart(days, (d) => [stats[idx(d)].sleepMs / HR], { aria: 'Hours of sleep per day, last 7 days', fmt: (t) => t.toFixed(1) }) +
-    '<div class="legend"><span>Hours per day</span></div></section>';
+    barChart(days, (d) => [stats[idx(d)].sleepMs], { aria: 'Sleep per day, last 7 days', fmt: (t) => fmtHM(t) }) + '</section>';
   html += '<section class="card"><h2>Pediatrician summary</h2><div class="chips"><button class="chip' + (S.sumRange === '24h' ? ' on' : '') + '" data-act="sum-range" data-r="24h">Last 24 hours</button><button class="chip' + (S.sumRange === '7d' ? ' on' : '') + '" data-act="sum-range" data-r="7d">Last 7 days</button></div>' +
     '<pre class="summary">' + esc(buildSummary(S.sumRange)) + '</pre><button class="btn big" data-act="copy-summary">Copy summary</button></section>';
   return html;
@@ -616,40 +705,80 @@ function renderLogin() {
 function openSheet(title, html, wire) {
   closeSheet();
   const root = $('#sheet-root');
-  root.innerHTML = '<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="head"><h2>' + esc(title) + '</h2><button class="iconbtn" data-sheet="close" aria-label="Close">' + ic('close') + '</button></div><div class="stack">' + html + '</div></div></div>';
+  root.innerHTML = '<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="grab"><i></i></div><div class="head"><h2>' + esc(title) + '</h2><button class="iconbtn" data-sheet="close" aria-label="Close">' + ic('close') + '</button></div><div class="stack">' + html + '</div></div></div>';
   const el = $('.sheet', root);
   $('#scrim').addEventListener('click', (e) => { if (e.target.id === 'scrim') closeSheet(); });
   el.addEventListener('click', (e) => { if (e.target.closest('[data-sheet="close"]')) closeSheet(); });
+  makeDismissable(el);
   if (wire) wire(el, closeSheet);
   return el;
 }
 function closeSheet() { $('#sheet-root').innerHTML = ''; }
 
-function timeField(label) {
-  return '<div class="field"><span>' + (label || 'Time') + '</span><div class="chips" id="tchips">' +
-    [0, 5, 10, 20, 30, 60].map((m) => '<button type="button" class="chip' + (m === 0 ? ' on' : '') + '" data-ago="' + m + '">' + (m ? m + ' min ago' : 'Now') + '</button>').join('') +
-    '</div><input type="datetime-local" id="tinput" aria-label="' + (label || 'Time') + '"></div>';
-}
-function wireTime(el, ctx) {
-  const inp = $('#tinput', el);
-  inp.value = toLocalInput(ctx.when);
-  el.addEventListener('click', (e) => {
-    const c = e.target.closest('[data-ago]');
-    if (!c) return;
-    ctx.when = new Date(Date.now() - (+c.dataset.ago) * MIN);
-    inp.value = toLocalInput(ctx.when);
-    el.querySelectorAll('[data-ago]').forEach((x) => x.classList.toggle('on', x === c));
-  });
-  inp.addEventListener('change', () => {
-    const d = new Date(inp.value);
-    if (!isNaN(d)) { ctx.when = d; el.querySelectorAll('[data-ago]').forEach((x) => x.classList.remove('on')); }
+/* Drag the handle or title down to dismiss. */
+function makeDismissable(sheet) {
+  let y0 = null, dy = 0, t0 = 0;
+  const grabbers = sheet.querySelectorAll('.grab, .head h2');
+  grabbers.forEach((g) => {
+    g.addEventListener('pointerdown', (e) => {
+      y0 = e.clientY; dy = 0; t0 = Date.now();
+      g.setPointerCapture && g.setPointerCapture(e.pointerId);
+      sheet.classList.add('dragging');
+    });
+    g.addEventListener('pointermove', (e) => {
+      if (y0 === null) return;
+      dy = Math.max(0, e.clientY - y0);
+      sheet.style.transform = 'translateY(' + dy + 'px)';
+    });
+    const end = () => {
+      if (y0 === null) return;
+      const v = dy / Math.max(1, Date.now() - t0);
+      y0 = null;
+      sheet.classList.remove('dragging');
+      if (dy > 110 || (dy > 40 && v > 0.6)) closeSheet();
+      else sheet.style.transform = '';
+    };
+    g.addEventListener('pointerup', end);
+    g.addEventListener('pointercancel', end);
   });
 }
 
+/* Time: one scrollable chip row. "Custom" reveals date and time fields. */
+function timeField(label) {
+  return '<div class="field"><span>' + (label || 'Time') + '</span><div class="chips scroll" id="tchips">' +
+    [0, 5, 10, 20, 30, 60].map((m) => '<button type="button" class="chip' + (m === 0 ? ' on' : '') + '" data-ago="' + m + '">' + (m ? m + ' min ago' : 'Now') + '</button>').join('') +
+    '<button type="button" class="chip" data-custom="1">Custom</button></div>' +
+    '<div id="tcustom" hidden>' + dtHtml('tc', new Date()) + '</div></div>';
+}
+function wireTime(el, ctx) {
+  ctx.when = new Date(); ctx.now = true;
+  const custom = $('#tcustom', el);
+  const read = () => { const d = dtVal(el, 'tc'); if (d) { ctx.when = d; ctx.now = false; } };
+  el.addEventListener('click', (e) => {
+    const c = e.target.closest('[data-ago],[data-custom]');
+    if (!c) return;
+    el.querySelectorAll('#tchips .chip').forEach((x) => x.classList.toggle('on', x === c));
+    if (c.dataset.custom) {
+      custom.hidden = false;
+      read();
+    } else {
+      custom.hidden = true;
+      const m = +c.dataset.ago;
+      ctx.now = m === 0;
+      ctx.when = new Date(Date.now() - m * MIN);
+    }
+  });
+  custom.addEventListener('input', read);
+  custom.addEventListener('change', read);
+}
+const whenOf = (ctx) => (ctx.now ? new Date() : ctx.when);
+
 function feedSheet() {
   const last = latest('feed');
-  const ctx = { oz: last && last.amount_oz ? +last.amount_oz : 2, when: new Date() };
+  const lastOz = last && last.amount_oz ? +last.amount_oz : null;
+  const ctx = { oz: lastOz || 2 };
   openSheet('Log feed',
+    (lastOz ? '<button class="chip" style="min-height:48px;align-self:flex-start" data-same="1">Same as last (' + fmtOz(lastOz) + ' oz)</button>' : '') +
     '<div class="stepper"><button class="btn round" data-s="dec" aria-label="Less formula">' + ic('minus') + '</button><div class="oz"><span id="oz">' + fmtOz(ctx.oz) + '</span><small>oz</small></div><button class="btn round" data-s="inc" aria-label="More formula">' + ic('plus') + '</button></div>' +
     '<div class="chips">' + [1, 2, 3, 4].map((n) => '<button class="chip" data-oz="' + n + '">' + n + ' oz</button>').join('') + '</div>' +
     timeField() +
@@ -659,34 +788,36 @@ function feedSheet() {
     (el, close) => {
       wireTime(el, ctx);
       const show = () => { $('#oz', el).textContent = fmtOz(ctx.oz); };
+      const save = () => {
+        const notes = [$('#spit', el).checked ? 'Spit-up' : '', $('#note', el).value.trim()].filter(Boolean).join('. ');
+        addEvent({ type: 'feed', amount_oz: ctx.oz, started_at: whenOf(ctx).toISOString(), notes: notes || null });
+        close(); toast('Feed saved');
+      };
       el.addEventListener('click', (e) => {
+        if (e.target.closest('[data-same]')) { ctx.oz = lastOz; show(); save(); return; }
         const b = e.target.closest('[data-s],[data-oz]');
         if (!b) return;
         if (b.dataset.oz) { ctx.oz = +b.dataset.oz; show(); }
         else if (b.dataset.s === 'dec') { ctx.oz = Math.max(0, ctx.oz - 0.5); show(); }
         else if (b.dataset.s === 'inc') { ctx.oz = ctx.oz + 0.5; show(); }
-        else if (b.dataset.s === 'save') {
-          const notes = [$('#spit', el).checked ? 'Spit-up' : '', $('#note', el).value.trim()].filter(Boolean).join('. ');
-          addEvent({ type: 'feed', amount_oz: ctx.oz, started_at: ctx.when.toISOString(), notes: notes || null });
-          close(); toast('Feed saved');
-        }
+        else if (b.dataset.s === 'save') save();
       });
     });
 }
 
 function diaperSheet() {
-  const ctx = { when: new Date() };
+  const ctx = {};
   openSheet('Log diaper',
+    '<div class="kinds">' + ['wet', 'dirty', 'both'].map((k) => '<button class="btn primary" data-kind="' + k + '">' + ic(k, 30) + cap(k) + '</button>').join('') + '</div>' +
+    '<p class="note-small" style="margin:-4px 0 0">Tap a kind to save.</p>' +
     timeField() +
-    '<input type="text" id="note" placeholder="Note (color, rash)" aria-label="Note">' +
-    '<div class="kinds">' + ['wet', 'dirty', 'both'].map((k) => '<button class="btn primary" data-kind="' + k + '">' + ic('diaper', 28) + cap(k) + '</button>').join('') + '</div>' +
-    '<p class="note-small" style="margin:0">Tap a kind to save.</p>',
+    '<input type="text" id="note" placeholder="Note (color, rash). Fill in before you tap a kind." aria-label="Note">',
     (el, close) => {
       wireTime(el, ctx);
       el.addEventListener('click', (e) => {
         const b = e.target.closest('[data-kind]');
         if (!b) return;
-        addEvent({ type: 'diaper', diaper_kind: b.dataset.kind, started_at: ctx.when.toISOString(), notes: $('#note', el).value.trim() || null });
+        addEvent({ type: 'diaper', diaper_kind: b.dataset.kind, started_at: whenOf(ctx).toISOString(), notes: $('#note', el).value.trim() || null });
         close(); toast('Diaper saved');
       });
     });
@@ -727,7 +858,7 @@ function stopTummy() {
 }
 
 function medSheet() {
-  const ctx = { when: new Date() };
+  const ctx = {};
   openSheet('Medication or vitamin',
     '<div class="chips"><button class="chip" data-label="Vitamin D">Vitamin D</button></div>' +
     '<label class="field">Name<input type="text" id="label" placeholder="e.g. Vitamin D" aria-label="Name"></label>' +
@@ -741,7 +872,7 @@ function medSheet() {
         if (e.target.closest('[data-s="save"]')) {
           const label = $('#label', el).value.trim();
           if (!label) { toast('Add a name'); return; }
-          addEvent({ type: 'med', label, started_at: ctx.when.toISOString(), notes: $('#note', el).value.trim() || null });
+          addEvent({ type: 'med', label, started_at: whenOf(ctx).toISOString(), notes: $('#note', el).value.trim() || null });
           close(); toast('Saved');
         }
       });
@@ -749,7 +880,7 @@ function medSheet() {
 }
 
 function measureSheet() {
-  const ctx = { when: new Date() };
+  const ctx = {};
   openSheet('Weight and length',
     '<div class="split"><label class="field">Weight (lb)<input type="number" inputmode="decimal" step="0.1" min="0" id="w" aria-label="Weight in pounds"></label>' +
     '<label class="field">Length (in)<input type="number" inputmode="decimal" step="0.25" min="0" id="l" aria-label="Length in inches"></label></div>' +
@@ -761,14 +892,14 @@ function measureSheet() {
         if (!e.target.closest('[data-s="save"]')) return;
         const w = parseFloat($('#w', el).value), l = parseFloat($('#l', el).value);
         if (isNaN(w) && isNaN(l)) { toast('Add a weight or a length'); return; }
-        addEvent({ type: 'measure', weight_lb: isNaN(w) ? null : w, length_in: isNaN(l) ? null : l, started_at: ctx.when.toISOString(), notes: $('#note', el).value.trim() || null });
+        addEvent({ type: 'measure', weight_lb: isNaN(w) ? null : w, length_in: isNaN(l) ? null : l, started_at: whenOf(ctx).toISOString(), notes: $('#note', el).value.trim() || null });
         close(); toast('Saved');
       });
     });
 }
 
 function noteSheet() {
-  const ctx = { when: new Date() };
+  const ctx = {};
   openSheet('Note',
     '<input type="text" id="label" placeholder="Title (optional)" aria-label="Title">' +
     '<label class="field">Note<textarea id="note" aria-label="Note"></textarea></label>' + timeField() +
@@ -779,7 +910,7 @@ function noteSheet() {
         if (!e.target.closest('[data-s="save"]')) return;
         const notes = $('#note', el).value.trim();
         if (!notes && !$('#label', el).value.trim()) { toast('Write something first'); return; }
-        addEvent({ type: 'note', label: $('#label', el).value.trim() || null, notes: notes || null, started_at: ctx.when.toISOString() });
+        addEvent({ type: 'note', label: $('#label', el).value.trim() || null, notes: notes || null, started_at: whenOf(ctx).toISOString() });
         close(); toast('Saved');
       });
     });
@@ -788,14 +919,14 @@ function noteSheet() {
 function pastSleepSheet() {
   const end = new Date(), start = new Date(Date.now() - HR);
   openSheet('Add past sleep',
-    '<label class="field">Fell asleep<input type="datetime-local" id="ps" value="' + toLocalInput(start) + '"></label>' +
-    '<label class="field">Woke up<input type="datetime-local" id="pe" value="' + toLocalInput(end) + '"></label>' +
+    '<div class="field"><span>Fell asleep</span>' + dtHtml('ps', start) + '</div>' +
+    '<div class="field"><span>Woke up</span>' + dtHtml('pe', end) + '</div>' +
     '<button class="btn primary big" data-s="save">Save sleep</button>',
     (el, close) => {
       el.addEventListener('click', (e) => {
         if (!e.target.closest('[data-s="save"]')) return;
-        const s = new Date($('#ps', el).value), en = new Date($('#pe', el).value);
-        if (isNaN(s) || isNaN(en) || en <= s) { toast('Wake time must be after the start'); return; }
+        const s = dtVal(el, 'ps'), en = dtVal(el, 'pe');
+        if (!s || !en || en <= s) { toast('Wake time must be after the start'); return; }
         addEvent({ type: 'sleep', started_at: s.toISOString(), ended_at: en.toISOString() });
         close(); toast('Sleep saved');
       });
@@ -812,16 +943,17 @@ function editSheet(id) {
   if (e.type === 'diaper') fields += '<div class="chips" id="f-kind">' + ['wet', 'dirty', 'both'].map((k) => '<button type="button" class="chip' + (e.diaper_kind === k ? ' on' : '') + '" data-k="' + k + '">' + cap(k) + '</button>').join('') + '</div>';
   if (e.type === 'med' || e.type === 'note') fields += '<label class="field">' + (e.type === 'med' ? 'Name' : 'Title') + '<input type="text" id="f-label" value="' + esc(e.label || '') + '"></label>';
   if (e.type === 'measure') fields += '<div class="split"><label class="field">Weight (lb)<input type="number" inputmode="decimal" step="0.1" id="f-w" value="' + (e.weight_lb ?? '') + '"></label><label class="field">Length (in)<input type="number" inputmode="decimal" step="0.25" id="f-l" value="' + (e.length_in ?? '') + '"></label></div>';
-  fields += '<label class="field">' + (ranged ? 'Start' : 'Time') + '<input type="datetime-local" id="f-start" value="' + toLocalInput(e.started_at) + '"></label>';
-  if (ranged) fields += '<label class="field">End (leave empty if still running)<input type="datetime-local" id="f-end" value="' + (e.ended_at ? toLocalInput(e.ended_at) : '') + '"></label>';
+  fields += '<div class="field"><span>' + (ranged ? 'Start' : 'Time') + '</span>' + dtHtml('fs', new Date(e.started_at)) + '</div>';
+  if (ranged) fields += '<div class="field"><span>End</span>' + dtHtml('fe', e.ended_at ? new Date(e.ended_at) : null) + '<button type="button" class="chip" data-running="1" style="align-self:flex-start">Still running</button></div>';
   fields += '<label class="field">Notes<textarea id="f-notes">' + esc(e.notes || '') + '</textarea></label>';
-  fields += '<p class="note-small" style="margin:0">Logged by ' + esc(e.created_by_name || 'unknown') + '</p>';
+  fields += '<p class="note-small" style="margin:0">Logged by ' + esc(who(e) || 'unknown') + '</p>';
   let kind = e.diaper_kind;
 
   openSheet('Edit ' + eventTitle(e).toLowerCase(),
     fields + '<button class="btn primary big" data-s="save">Save changes</button><div id="delzone"><button class="btn danger big" data-s="del">' + ic('trash') + 'Delete</button></div>',
     (el, close) => {
       el.addEventListener('click', (ev) => {
+        if (ev.target.closest('[data-running]')) { $('#fe-d', el).value = ''; $('#fe-t', el).value = ''; return; }
         const k = ev.target.closest('[data-k]');
         if (k) { kind = k.dataset.k; el.querySelectorAll('[data-k]').forEach((x) => x.classList.toggle('on', x === k)); return; }
         const b = ev.target.closest('[data-s]');
@@ -834,14 +966,13 @@ function editSheet(id) {
           removeEvent(id); close(); toast('Deleted');
         } else if (b.dataset.s === 'save') {
           const patch = { notes: $('#f-notes', el).value.trim() || null };
-          const st = new Date($('#f-start', el).value);
-          if (isNaN(st)) { toast('Check the time'); return; }
+          const st = dtVal(el, 'fs');
+          if (!st) { toast('Check the time'); return; }
           patch.started_at = st.toISOString();
           if (ranged) {
-            const v = $('#f-end', el).value;
-            if (v) {
-              const en = new Date(v);
-              if (isNaN(en) || en <= st) { toast('End must be after the start'); return; }
+            const en = dtVal(el, 'fe');
+            if (en) {
+              if (en <= st) { toast('End must be after the start'); return; }
               patch.ended_at = en.toISOString();
             } else {
               const other = S.events.find((x) => x.type === e.type && !x.ended_at && x.id !== id);
@@ -860,37 +991,38 @@ function editSheet(id) {
 }
 
 /* ---------- Tasks: add + calendar ---------- */
-function taskSheet() {
+function taskSheet(preset) {
+  preset = preset || {};
   const nextHour = new Date(Math.ceil((Date.now() + 5 * MIN) / HR) * HR);
-  const ctx = { log_as: null };
   openSheet('Add task',
-    '<div class="chips">' + ['Pediatrician visit', 'Weight check', 'Vitamin D', 'Custom'].map((p) => '<button class="chip" data-preset="' + p + '">' + p + '</button>').join('') + '</div>' +
-    '<label class="field">Title<input type="text" id="t-title" aria-label="Title"></label>' +
-    '<label class="field">Due<input type="datetime-local" id="t-due" value="' + toLocalInput(nextHour) + '"></label>' +
+    '<div class="chips scroll">' + TASK_PRESETS.map((p, i) => '<button class="chip' + (preset.label === p.label ? ' on' : '') + '" data-preset="' + i + '">' + p.label + '</button>').join('') + '</div>' +
+    '<label class="field">Title<input type="text" id="t-title" aria-label="Title" value="' + esc(preset.title || '') + '"></label>' +
+    '<div class="field"><span>Due</span>' + dtHtml('td', nextHour) + '</div>' +
     '<label class="field">Repeat<select id="t-rec"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="every_n_hours">Every N hours</option></select></label>' +
     '<label class="field" id="t-int-wrap" hidden>Hours between<input type="number" inputmode="numeric" min="1" step="1" id="t-int" value="4"></label>' +
-    '<label class="toggle"><input type="checkbox" id="t-med"> Log as medication when checked off</label>' +
+    '<label class="toggle"><input type="checkbox" id="t-med"' + (preset.med ? ' checked' : '') + '> Log as medication when checked off</label>' +
     '<button class="btn primary big" data-s="save">Save task</button>',
     (el, close) => {
       const rec = $('#t-rec', el);
+      rec.value = preset.rec || 'none';
       rec.addEventListener('change', () => { $('#t-int-wrap', el).hidden = rec.value !== 'every_n_hours'; });
       el.addEventListener('click', (e) => {
         const p = e.target.closest('[data-preset]');
         if (p) {
-          const v = p.dataset.preset;
+          const pr = TASK_PRESETS[+p.dataset.preset];
           el.querySelectorAll('[data-preset]').forEach((x) => x.classList.toggle('on', x === p));
-          if (v === 'Custom') { $('#t-title', el).value = ''; $('#t-title', el).focus(); return; }
-          $('#t-title', el).value = v;
-          if (v === 'Vitamin D') { rec.value = 'daily'; $('#t-med', el).checked = true; }
-          else { rec.value = 'none'; $('#t-med', el).checked = false; }
+          $('#t-title', el).value = pr.title || '';
+          rec.value = pr.rec || 'none';
+          $('#t-med', el).checked = !!pr.med;
           $('#t-int-wrap', el).hidden = true;
+          if (!pr.title) $('#t-title', el).focus();
           return;
         }
         if (!e.target.closest('[data-s="save"]')) return;
         const title = $('#t-title', el).value.trim();
-        const due = new Date($('#t-due', el).value);
+        const due = dtVal(el, 'td');
         if (!title) { toast('Add a title'); return; }
-        if (isNaN(due)) { toast('Check the due time'); return; }
+        if (!due) { toast('Check the due time'); return; }
         const recurrence = rec.value;
         const n = parseInt($('#t-int', el).value, 10);
         if (recurrence === 'every_n_hours' && !(n >= 1)) { toast('Hours between must be 1 or more'); return; }
@@ -916,7 +1048,7 @@ function calendarSheet(id) {
   const details = 'From the ' + babyName() + ' tracker';
   const rr = rruleFor(t);
   openSheet('Add to calendar',
-    '<div class="stack"><button class="btn big" data-c="google">Google Calendar</button><button class="btn big" data-c="apple">Apple Calendar (.ics file)</button></div>' +
+    '<button class="btn big" data-c="google">Google Calendar</button><button class="btn big" data-c="apple">Apple Calendar (.ics file)</button>' +
     '<p class="note-small" style="margin:0">Apple Reminders and Google Tasks have no reliable link method, so we use Calendar.</p>',
     (el, close) => {
       el.addEventListener('click', (e) => {
@@ -943,7 +1075,7 @@ function calendarSheet(id) {
     });
 }
 
-/* ---------- Settings + look ---------- */
+/* ---------- Settings, look, and your name ---------- */
 function lookHtml(current) {
   return '<div class="stack" id="looks">' + THEMES.map((t) =>
     '<button class="btn' + (current === t[0] ? ' primary' : '') + '" data-look="' + t[0] + '" style="justify-content:space-between"><span>' + t[1] + '</span><span style="font-weight:400;font-size:14px">' + t[2] + '</span></button>').join('') + '</div>';
@@ -961,14 +1093,29 @@ function lookSheet() {
   openSheet('Pick a look', '<p class="note-small" style="margin:0">This is saved on this phone only. Change it any time in Settings.</p>' + lookHtml(ls.get('bt_theme', '')),
     (el, close) => wireLook(el, () => { close(); render(); }));
 }
+function nameSheet(then) {
+  openSheet('What should we call you?',
+    '<p class="note-small" style="margin:0">Shown next to the entries you log. Both phones see it.</p>' +
+    '<input type="text" id="nm" placeholder="Your first name" autocomplete="given-name" aria-label="Your name">' +
+    '<button class="btn primary big" data-s="save">Save</button>',
+    (el, close) => {
+      el.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-s="save"]')) return;
+        const v = $('#nm', el).value.trim();
+        if (!v) { toast('Add a name'); return; }
+        setSetting(myNameKey(), v);
+        close(); render(); if (then) then();
+      });
+    });
+}
 
 function settingsSheet() {
-  const birth = S.settings.birth_datetime ? toLocalInput(S.settings.birth_datetime) : '';
+  const birth = S.settings.birth_datetime ? new Date(S.settings.birth_datetime) : null;
   openSheet('Settings',
     '<label class="field">Baby name<input type="text" id="s-name" value="' + esc(S.settings.baby_name || '') + '" placeholder="Baby"></label>' +
-    '<label class="field">Birth date and time<input type="datetime-local" id="s-birth" value="' + birth + '"></label>' +
+    '<div class="field"><span>Birth date and time</span>' + dtHtml('sb', birth) + '</div>' +
     '<label class="field">Target hours between feeds<input type="number" inputmode="decimal" step="0.25" min="1" id="s-int" value="' + esc(S.settings.feed_interval_target_hours || '3') + '"></label>' +
-    '<label class="field">Your display name (this phone)<input type="text" id="s-me" value="' + esc(ls.get('bt_name', '')) + '" placeholder="' + esc(S.user.email.split('@')[0]) + '"></label>' +
+    '<label class="field">Your name<input type="text" id="s-me" value="' + esc(S.settings[myNameKey()] || '') + '" placeholder="' + esc(S.user.email.split('@')[0]) + '"></label>' +
     '<div class="field"><span>Look (this phone)</span>' + lookHtml(ls.get('bt_theme', 'night-shift')) + '</div>' +
     '<button class="btn primary big" data-s="save">Save settings</button>' +
     '<button class="btn ghost big" data-s="signout">Sign out</button>',
@@ -980,11 +1127,12 @@ function settingsSheet() {
         if (b.dataset.s === 'signout') { close(); await sb.auth.signOut(); return; }
         if (b.dataset.s === 'save') {
           setSetting('baby_name', $('#s-name', el).value.trim());
-          const bd = new Date($('#s-birth', el).value);
-          if (!isNaN(bd)) setSetting('birth_datetime', bd.toISOString());
+          const bd = dtVal(el, 'sb');
+          if (bd) setSetting('birth_datetime', bd.toISOString());
           const iv = parseFloat($('#s-int', el).value);
           if (iv >= 1) setSetting('feed_interval_target_hours', iv);
-          ls.set('bt_name', $('#s-me', el).value.trim());
+          const me = $('#s-me', el).value.trim();
+          if (me) setSetting(myNameKey(), me);
           close(); render(); toast('Settings saved');
         }
       });
@@ -1003,12 +1151,13 @@ const actions = {
   'sleep-toggle': toggleSleep,
   'tummy-stop': stopTummy,
   edit: (t) => editSheet(t.dataset.id),
-  'day-prev': () => { S.tlDay = new Date(S.tlDay.getTime() - DAY); S.tlDay = startOfDay(S.tlDay); render(); },
+  'day-prev': () => { S.tlDay = startOfDay(new Date(S.tlDay.getTime() - DAY + 3 * HR)); render(); },
   'day-next': () => {
     const n = startOfDay(new Date(S.tlDay.getTime() + DAY + 3 * HR));
     if (n.getTime() <= startOfDay(new Date()).getTime()) { S.tlDay = n; render(); }
   },
-  'task-add': taskSheet,
+  'task-add': () => taskSheet(),
+  'task-preset': (t) => { const p = TASK_PRESETS[+t.dataset.i]; taskSheet(p); },
   'task-check': (t) => completeTask(t.dataset.id),
   'task-cal': (t) => calendarSheet(t.dataset.id),
   'sum-range': (t) => { S.sumRange = t.dataset.r; render(); },
@@ -1052,7 +1201,8 @@ async function start() {
   await loadAll();
   subscribe();
   render();
-  if (!ls.get('bt_theme', '')) lookSheet();
+  const askLook = () => { if (!ls.get('bt_theme', '')) lookSheet(); };
+  if (!S.settings[myNameKey()]) nameSheet(askLook); else askLook();
 }
 function stop() {
   S.started = false;
@@ -1069,9 +1219,11 @@ setInterval(() => {
   if (a && a.closest && a.closest('#main') && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return;
   render();
 }, 30000);
+// Retry a stuck queue, and keep the badge honest.
+setInterval(() => { if (S.user && qLoad().length) flush(); updateSyncUI(); }, 5000);
 
-window.addEventListener('online', () => { flush().then(() => S.user && loadAll().then(render)); updateOnlineUI(); });
-window.addEventListener('offline', updateOnlineUI);
+window.addEventListener('online', () => { flush().then(() => S.user && loadAll().then(render)); updateSyncUI(); });
+window.addEventListener('offline', updateSyncUI);
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && S.user && S.started) { flush().then(() => loadAll().then(render)); }
 });
