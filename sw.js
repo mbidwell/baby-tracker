@@ -1,4 +1,4 @@
-const VERSION = 'bt-v4';
+const VERSION = 'bt-v5';
 const SHELL = [
   './',
   './index.html',

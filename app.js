@@ -11,19 +11,45 @@ function dbgSnap(tag) {
     iH: window.innerHeight, vv: vv ? Math.round(vv.height * 10) / 10 : null, sH: screen.height,
     cH: document.documentElement.clientHeight,
     mSH: m ? m.scrollHeight : null, mCH: m ? m.clientHeight : null,
-    nav: nav ? Math.round(nav.getBoundingClientRect().bottom * 10) / 10 : null
+    nav: nav ? Math.round(nav.getBoundingClientRect().bottom * 10) / 10 : null,
+    app: q('#app') ? Math.round(q('#app').getBoundingClientRect().bottom * 10) / 10 : null,
+    fix: document.documentElement.hasAttribute('data-vfix') ? 1 : 0
   };
   DBG.push(row);
   if (DBG.length > 60) DBG.shift();
   try { console.log('[bt-dbg]', JSON.stringify(row)); } catch (e) {}
 }
+/* iOS standalone viewport fix.
+   Measured on the phone (round 4): at launch innerHeight was 894 while screen.height was 956. The page is laid out
+   62pt (the status-bar height) shorter than the screen it draws on, so fixed bars float above the bottom edge.
+   When that exact situation is detected we size the shell to screen.height. It is a no-op everywhere else,
+   and it can be switched off from Settings (localStorage bt_vfix = off). */
+function fixViewport() {
+  const root = document.documentElement;
+  let on = true;
+  try { on = localStorage.getItem('bt_vfix') !== 'off'; } catch (e) {}
+  const standalone = navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+  const gap = screen.height - window.innerHeight;
+  if (on && standalone && window.innerHeight > window.innerWidth && gap > 20 && gap <= 120) {
+    root.style.setProperty('--app-h', screen.height + 'px');
+    root.setAttribute('data-vfix', '1');
+  } else {
+    root.style.removeProperty('--app-h');
+    root.removeAttribute('data-vfix');
+  }
+}
+const vf = (tag) => () => { fixViewport(); dbgSnap(tag); };
+fixViewport();
 dbgSnap('script start');
-document.addEventListener('DOMContentLoaded', () => dbgSnap('DOMContentLoaded'));
-window.addEventListener('load', () => { dbgSnap('load'); setTimeout(() => dbgSnap('load+300ms'), 300); });
-window.addEventListener('resize', () => dbgSnap('resize'));
-window.addEventListener('pageshow', () => dbgSnap('pageshow'));
-window.addEventListener('orientationchange', () => dbgSnap('orientationchange'));
-if (window.visualViewport) window.visualViewport.addEventListener('resize', () => dbgSnap('vv resize'));
+document.addEventListener('DOMContentLoaded', vf('DOMContentLoaded'));
+window.addEventListener('load', () => { vf('load')(); setTimeout(vf('load+300ms'), 300); setTimeout(vf('load+1s'), 1000); });
+window.addEventListener('resize', vf('resize'));
+window.addEventListener('pageshow', vf('pageshow'));
+window.addEventListener('focus', vf('focus'));
+window.addEventListener('orientationchange', () => setTimeout(vf('orientationchange'), 200));
+document.addEventListener('visibilitychange', vf('visibility'));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', vf('vv resize'));
+[50, 150, 600].forEach((ms) => setTimeout(fixViewport, ms));
 
 /* ============================================================
    Config
@@ -1180,9 +1206,10 @@ function layoutReadout() {
   dbgSnap('readout opened');
   const probe = document.getElementById('sa-probe') || (() => { const d = document.createElement('div'); d.id = 'sa-probe'; document.body.appendChild(d); return d; })();
   const cs = getComputedStyle(probe);
-  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v4\n' +
-    'ms  event  innerH vvH screenH clientH mainSH/CH navBottom\n';
-  return head + DBG.map((r) => r.t + ' ' + r.tag + ' ' + r.iH + ' ' + r.vv + ' ' + r.sH + ' ' + r.cH + ' ' + r.mSH + '/' + r.mCH + ' ' + r.nav).join('\n');
+  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v5\n' +
+    'viewport fix: ' + (document.documentElement.hasAttribute('data-vfix') ? 'ACTIVE (' + document.documentElement.style.getPropertyValue('--app-h') + ')' : 'not active') + '\n' +
+    'ms  event  innerH vvH screenH clientH mainSH/CH navBottom appBottom fix\n';
+  return head + DBG.map((r) => r.t + ' ' + r.tag + ' ' + r.iH + ' ' + r.vv + ' ' + r.sH + ' ' + r.cH + ' ' + r.mSH + '/' + r.mCH + ' ' + r.nav + ' ' + r.app + ' ' + r.fix).join('\n');
 }
 function lookHtml(current) {
   return '<div class="stack" id="looks">' + THEMES.map((t) =>
@@ -1225,7 +1252,7 @@ function settingsSheet() {
     '<label class="field">Target hours between feeds<input type="number" inputmode="decimal" step="0.25" min="1" id="s-int" value="' + esc(S.settings.feed_interval_target_hours || '3') + '"></label>' +
     '<label class="field">Your name<input type="text" id="s-me" value="' + esc(S.settings[myNameKey()] || '') + '" placeholder="' + esc(S.user.email.split('@')[0]) + '"></label>' +
     '<div class="field"><span>Look (this phone)</span>' + lookHtml(ls.get('bt_theme', 'night-shift')) + '</div>' + toneHtml() +
-    '<div class="field"><span>Layout readout (temporary)</span><pre class="dbg" id="dbg">' + esc(layoutReadout()) + '</pre><button type="button" class="chip" data-s="dbg-refresh" style="align-self:flex-start">Refresh readout</button></div>' +
+    '<div class="field"><span>Layout readout (temporary)</span><pre class="dbg" id="dbg">' + esc(layoutReadout()) + '</pre><div class="chips"><button type="button" class="chip" data-s="dbg-refresh">Refresh readout</button><button type="button" class="chip" data-s="vfix-toggle">Viewport fix: ' + (ls.get('bt_vfix', 'on') === 'off' ? 'off' : 'on') + '</button></div></div>' +
     '<button class="btn primary big" data-s="save">Save settings</button>' +
     '<button class="btn ghost big" data-s="signout">Sign out</button>',
     (el, close) => {
@@ -1234,6 +1261,14 @@ function settingsSheet() {
       el.addEventListener('click', async (e) => {
         const b = e.target.closest('[data-s]');
         if (!b) return;
+        if (b.dataset.s === 'vfix-toggle') {
+          const nowOff = ls.get('bt_vfix', 'on') !== 'off';
+          ls.set('bt_vfix', nowOff ? 'off' : 'on');
+          fixViewport();
+          b.textContent = 'Viewport fix: ' + (nowOff ? 'off' : 'on');
+          $('#dbg', el).textContent = layoutReadout();
+          return;
+        }
         if (b.dataset.s === 'dbg-refresh') { $('#dbg', el).textContent = layoutReadout(); return; }
         if (b.dataset.s === 'signout') { close(); await sb.auth.signOut(); return; }
         if (b.dataset.s === 'save') {

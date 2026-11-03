@@ -283,3 +283,8 @@ pre.summary { white-space: pre-wrap; font-family: var(--font-body); font-size: 1
 @keyframes softpop { 0% { transform: scale(1); } 50% { transform: scale(1.18); } 100% { transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .checkbtn.pop { animation: none; } }
 .dbg { max-height: 220px; overflow: auto; }
+
+/* iOS standalone: when the layout viewport is shorter than the screen (see fixViewport in app.js), size to the screen. */
+html[data-vfix] #app, html[data-vfix] .scrim { bottom: auto; height: var(--app-h); }
+html[data-vfix] .sheet { position: relative; }
+html[data-vfix] #toast { bottom: calc(150px + env(safe-area-inset-top) + env(safe-area-inset-bottom)); }
