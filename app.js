@@ -1,0 +1,1091 @@
+'use strict';
+
+/* ============================================================
+   Config
+   ============================================================ */
+const CONFIG = {
+  SUPABASE_URL: 'https://qpfmfsghckzwnivacggr.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_vB51S9fZBm_Bm-WS2U5lWw_tZkyMywx' // publishable key, safe in the browser with RLS on
+};
+
+const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true }
+});
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+const MIN = 60000, HR = 3600000, DAY = 86400000;
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
+const pad2 = (n) => String(n).padStart(2, '0');
+const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const dayKey = (d) => { d = new Date(d); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+const toLocalInput = (d) => { d = new Date(d); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+const fmtTime = (d) => new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const fmtDay = (d) => new Date(d).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+const fmtShort = (d) => new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric' });
+const fmtDateTime = (d) => fmtShort(d) + ', ' + fmtTime(d);
+const fmtOz = (n) => (Math.round(n * 10) / 10).toString();
+
+function fmtDur(ms) {
+  ms = Math.max(0, ms);
+  const m = Math.floor(ms / MIN), h = Math.floor(m / 60), r = m % 60;
+  if (h > 0) return h + 'h ' + pad2(r) + 'm';
+  return m + 'm';
+}
+function fmtCountdown(ms) {
+  const a = Math.abs(ms);
+  let t;
+  if (a >= 48 * HR) t = Math.floor(a / DAY) + 'd ' + Math.floor((a % DAY) / HR) + 'h';
+  else t = fmtDur(a);
+  return ms >= 0 ? 'in ' + t : t + ' overdue';
+}
+
+/* ============================================================
+   State
+   ============================================================ */
+const S = {
+  user: null,
+  events: [],
+  tasks: [],
+  settings: {},
+  tab: 'home',
+  tlDay: startOfDay(new Date()),
+  sumRange: '24h',
+  channel: null,
+  started: false
+};
+
+const ls = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+};
+
+function displayName() {
+  const n = (ls.get('bt_name', '') || '').trim();
+  if (n) return n;
+  return S.user && S.user.email ? S.user.email.split('@')[0] : '';
+}
+const babyName = () => S.settings.baby_name || 'Baby';
+const isCozy = () => document.documentElement.dataset.theme !== 'night-shift';
+
+function dayOfLife() {
+  const b = S.settings.birth_datetime;
+  if (!b) return null;
+  const bd = new Date(b);
+  if (isNaN(bd)) return null;
+  return Math.max(1, Math.round((startOfDay(new Date()) - startOfDay(bd)) / DAY) + 1);
+}
+
+const sortEvents = () => S.events.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+const latest = (type) => S.events.find((e) => e.type === type);
+const openOf = (type) => S.events.find((e) => e.type === type && !e.ended_at);
+
+/* ============================================================
+   Theme
+   ============================================================ */
+function applyTheme() {
+  let t = ls.get('bt_theme', 'night-shift');
+  if (t === 'cozy-auto') { const h = new Date().getHours(); t = (h >= 20 || h < 6) ? 'cozy-night' : 'cozy'; }
+  if (document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  let m = document.querySelector('meta[name="theme-color"]');
+  if (m && bg) m.setAttribute('content', bg);
+}
+const THEMES = [
+  ['night-shift', 'Night shift', 'Dark and dense'],
+  ['cozy', 'Cozy', 'Soft and light'],
+  ['cozy-night', 'Cozy night', 'Soft and dusky'],
+  ['cozy-auto', 'Cozy, auto', 'Dusky from 8 pm to 6 am']
+];
+
+/* ============================================================
+   Icons
+   ============================================================ */
+const ICONS = {
+  feed: '<path d="M10 3h4M10.5 3v2.5h3V3M9 7.5h6a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9.5a2 2 0 0 1 2-2zM7 12.5h3M7 16.5h3"/>',
+  diaper: '<path d="M12 3c3 4 5.5 7 5.5 10a5.5 5.5 0 0 1-11 0C6.5 10 9 7 12 3z"/>',
+  sleep: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  tummy: '<path d="M9 3.5c-1.4 0-2 1.8-2 3.8s.6 3 1.6 3.2M15 3.5c1.4 0 2 1.8 2 3.8s-.6 3-1.6 3.2"/><circle cx="12" cy="15" r="5.5"/><path d="M10 14.5h.01M14 14.5h.01"/>',
+  med: '<rect x="3" y="8.5" width="18" height="7" rx="3.5" transform="rotate(-45 12 12)"/><path d="M9.5 14.5l5-5"/>',
+  measure: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M8 12l2 2M11 9l2 2M14 6l2 2"/>',
+  note: '<path d="M5 3h10l4 4v14H5z"/><path d="M15 3v4h4M8 12h8M8 16h6"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  timeline: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+  tasks: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/>',
+  trends: '<path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  chevL: '<path d="M15 5l-7 7 7 7"/>',
+  chevR: '<path d="M9 5l7 7-7 7"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'
+};
+const ic = (n, s = 24) => '<svg class="ic" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[n] || '') + '</svg>';
+
+const SUN = '<svg class="sleep-art" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="9" fill="#F7C948"/><g stroke="#F7C948" stroke-width="3" stroke-linecap="round"><path d="M24 6v5M24 37v5M6 24h5M37 24h5M11.3 11.3l3.5 3.5M33.2 33.2l3.5 3.5M36.7 11.3l-3.5 3.5M14.8 33.2l-3.5 3.5"/></g></svg>';
+const MOON = '<svg class="sleep-art" viewBox="0 0 48 48" aria-hidden="true"><path d="M33 31a14 14 0 0 1-17-18 14 14 0 1 0 17 18z" fill="#FFF3C4"/><g fill="none" stroke="#6C5A8A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M33 8h5l-5 5h5M40 17h3.5l-3.5 3.5h3.5"/></g></svg>';
+
+/* ============================================================
+   Toast
+   ============================================================ */
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+/* ============================================================
+   Data layer: optimistic writes, offline queue, realtime
+   ============================================================ */
+const qLoad = () => { try { return JSON.parse(ls.get('bt_q', '[]')); } catch (e) { return []; } };
+const qSave = (q) => ls.set('bt_q', JSON.stringify(q));
+let flushing = false;
+
+function isNetError(err) {
+  if (!err) return false;
+  if (!navigator.onLine) return true;
+  return err.status === 0 || /fetch|network|load failed|timeout/i.test(err.message || '');
+}
+
+async function runOp(op) {
+  const t = sb.from(op.table);
+  if (op.op === 'insert') return t.insert(op.row);
+  if (op.op === 'upsert') return t.upsert(op.row);
+  if (op.op === 'update') return t.update(op.patch).eq('id', op.id);
+  if (op.op === 'delete') return t.delete().eq('id', op.id);
+  return { error: null };
+}
+
+async function flush() {
+  if (flushing || !S.user) return;
+  flushing = true;
+  try {
+    let q = qLoad();
+    while (q.length) {
+      let res;
+      try { res = await runOp(q[0]); } catch (e) { break; }
+      if (res && res.error) {
+        if (isNetError(res.error)) break;
+        if (res.error.code !== '23505') toast('Could not save one change: ' + res.error.message);
+      }
+      q = qLoad(); q.shift(); qSave(q);
+    }
+  } finally {
+    flushing = false;
+    updateOnlineUI();
+  }
+}
+
+function enqueue(op) {
+  const q = qLoad(); q.push(op); qSave(q);
+  cacheSave();
+  flush();
+  updateOnlineUI();
+}
+
+let cacheTimer;
+function cacheSave() {
+  clearTimeout(cacheTimer);
+  cacheTimer = setTimeout(() => {
+    ls.set('bt_cache', JSON.stringify({ events: S.events.slice(0, 1500), tasks: S.tasks, settings: S.settings }));
+  }, 300);
+}
+
+function updateOnlineUI() {
+  const el = $('#offline-pill');
+  if (!el) return;
+  const pending = qLoad().length;
+  el.hidden = navigator.onLine && pending === 0;
+}
+
+function addEvent(row) {
+  row = Object.assign({ id: uid(), started_at: new Date().toISOString(), created_by_name: displayName() }, row);
+  S.events.push(row); sortEvents();
+  enqueue({ op: 'insert', table: 'events', row });
+  render();
+  return row;
+}
+function patchEvent(id, patch) {
+  const e = S.events.find((x) => x.id === id);
+  if (!e) return;
+  Object.assign(e, patch); sortEvents();
+  enqueue({ op: 'update', table: 'events', id, patch });
+  render();
+}
+function removeEvent(id) {
+  S.events = S.events.filter((x) => x.id !== id);
+  enqueue({ op: 'delete', table: 'events', id });
+  render();
+}
+function addTask(row) {
+  row = Object.assign({ id: uid(), recurrence: 'none', created_by_name: displayName() }, row);
+  S.tasks.push(row);
+  enqueue({ op: 'insert', table: 'tasks', row });
+  render();
+  return row;
+}
+function patchTask(id, patch) {
+  const t = S.tasks.find((x) => x.id === id);
+  if (!t) return;
+  Object.assign(t, patch);
+  enqueue({ op: 'update', table: 'tasks', id, patch });
+  render();
+}
+function setSetting(key, value) {
+  value = String(value);
+  S.settings[key] = value;
+  enqueue({ op: 'upsert', table: 'settings', row: { key, value } });
+}
+
+async function loadAll() {
+  try {
+    const [ev, tk, st] = await Promise.all([
+      sb.from('events').select('*').order('started_at', { ascending: false }).limit(3000),
+      sb.from('tasks').select('*').order('due_at', { ascending: true }),
+      sb.from('settings').select('*')
+    ]);
+    if (ev.error || tk.error || st.error) throw (ev.error || tk.error || st.error);
+    S.events = ev.data; sortEvents();
+    S.tasks = tk.data;
+    S.settings = {};
+    st.data.forEach((r) => { S.settings[r.key] = r.value; });
+    cacheSave();
+  } catch (e) {
+    if (!isNetError(e)) toast('Could not load data: ' + (e.message || e));
+  }
+}
+
+function loadCache() {
+  try {
+    const c = JSON.parse(ls.get('bt_cache', 'null'));
+    if (c) { S.events = c.events || []; S.tasks = c.tasks || []; S.settings = c.settings || {}; sortEvents(); }
+  } catch (e) {}
+}
+
+function subscribe() {
+  if (S.channel) { sb.removeChannel(S.channel); S.channel = null; }
+  const ch = sb.channel('household');
+  ch.on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, (p) => {
+    if (p.eventType === 'DELETE') S.events = S.events.filter((e) => e.id !== p.old.id);
+    else {
+      const i = S.events.findIndex((e) => e.id === p.new.id);
+      if (i >= 0) S.events[i] = p.new; else S.events.push(p.new);
+    }
+    sortEvents(); cacheSave(); render();
+  });
+  ch.on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, (p) => {
+    if (p.eventType === 'DELETE') S.tasks = S.tasks.filter((t) => t.id !== p.old.id);
+    else {
+      const i = S.tasks.findIndex((t) => t.id === p.new.id);
+      if (i >= 0) S.tasks[i] = p.new; else S.tasks.push(p.new);
+    }
+    cacheSave(); render();
+  });
+  ch.on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (p) => {
+    if (p.eventType === 'DELETE') delete S.settings[p.old.key];
+    else S.settings[p.new.key] = p.new.value;
+    cacheSave(); render();
+  });
+  ch.subscribe();
+  S.channel = ch;
+}
+
+/* ============================================================
+   Derived numbers
+   ============================================================ */
+function feedGapMs() {
+  const f = S.events.filter((e) => e.type === 'feed').slice(0, 8);
+  if (f.length >= 2) {
+    let sum = 0;
+    for (let i = 0; i < f.length - 1; i++) sum += new Date(f[i].started_at) - new Date(f[i + 1].started_at);
+    return sum / (f.length - 1);
+  }
+  return (parseFloat(S.settings.feed_interval_target_hours) || 3) * HR;
+}
+
+function overlap(e, from, to) {
+  const s = new Date(e.started_at).getTime();
+  const en = e.ended_at ? new Date(e.ended_at).getTime() : Date.now();
+  return Math.max(0, Math.min(en, to) - Math.max(s, from));
+}
+
+function dayStats(dayStart) {
+  const from = dayStart.getTime(), to = from + DAY;
+  const evs = S.events.filter((e) => { const t = new Date(e.started_at).getTime(); return t >= from && t < to; });
+  const feeds = evs.filter((e) => e.type === 'feed');
+  const diapers = evs.filter((e) => e.type === 'diaper');
+  return {
+    feeds: feeds.length,
+    oz: feeds.reduce((a, e) => a + (+e.amount_oz || 0), 0),
+    wet: diapers.filter((e) => e.diaper_kind === 'wet' || e.diaper_kind === 'both').length,
+    dirty: diapers.filter((e) => e.diaper_kind === 'dirty' || e.diaper_kind === 'both').length,
+    sleepMs: S.events.filter((e) => e.type === 'sleep').reduce((a, e) => a + overlap(e, from, to), 0)
+  };
+}
+
+/* ============================================================
+   Rendering
+   ============================================================ */
+function render() {
+  if (!S.user) { renderLogin(); return; }
+  const app = $('#app');
+  const prev = $('#main');
+  const scroll = prev ? prev.scrollTop : 0;
+  const dol = dayOfLife();
+  const tabs = [['home', 'Home', 'home'], ['timeline', 'Timeline', 'timeline'], ['tasks', 'Tasks', 'tasks'], ['trends', 'Trends', 'trends']];
+  const sleeping = !!openOf('sleep');
+  let body = '';
+  if (S.tab === 'home') body = homeHtml();
+  else if (S.tab === 'timeline') body = timelineHtml();
+  else if (S.tab === 'tasks') body = tasksHtml();
+  else body = trendsHtml();
+
+  app.innerHTML =
+    '<header class="top"><h1>' + esc(babyName()) + (dol ? '<small>day ' + dol + '</small>' : '') + '</h1>' +
+    '<div style="display:flex;align-items:center;gap:6px"><span class="pill" id="offline-pill" hidden>Offline, will sync</span>' +
+    '<button class="iconbtn" data-act="settings" aria-label="Settings">' + ic('gear') + '</button></div></header>' +
+    '<main id="main">' + body + '</main>' +
+    '<div class="quick">' +
+    '<button class="btn primary" data-act="feed">' + ic('feed') + 'Feed</button>' +
+    '<button class="btn primary" data-act="diaper">' + ic('diaper') + 'Diaper</button>' +
+    '<button class="btn primary" data-act="sleep-toggle">' + ic('sleep') + (sleeping ? 'Wake' : 'Sleep') + '</button>' +
+    '<button class="btn" data-act="more">' + ic('more') + 'More</button></div>' +
+    '<nav class="tabs" aria-label="Sections">' +
+    tabs.map((t) => '<button data-act="tab" data-tab="' + t[0] + '"' + (S.tab === t[0] ? ' aria-current="page"' : '') + '>' + ic(t[2]) + t[1] + '</button>').join('') + '</nav>';
+  const main = $('#main');
+  if (main) main.scrollTop = scroll;
+  updateOnlineUI();
+}
+
+function homeHtml() {
+  const now = Date.now();
+  const lf = latest('feed'), ld = latest('diaper');
+  const sleepOpen = openOf('sleep'), tummyOpen = openOf('tummy');
+  const gap = feedGapMs();
+  let html = '';
+
+  // Feed card
+  if (lf) {
+    const since = now - new Date(lf.started_at).getTime();
+    const pct = Math.min(1, since / gap);
+    const next = new Date(lf.started_at).getTime() + gap;
+    const over = now > next;
+    html += '<section class="card status feed' + (over ? ' alert' : '') + '"><div class="label">' + ic('feed') + 'Last feed</div>' +
+      '<div class="big">' + fmtDur(since) + '</div>' +
+      '<div class="sub">' + fmtOz(lf.amount_oz || 0) + ' oz · ' + fmtTime(lf.started_at) + (lf.created_by_name ? ' · ' + esc(lf.created_by_name) : '') + '</div>' +
+      '<div class="gauge' + (over ? ' alert' : '') + '" aria-hidden="true"><div class="fill" style="width:' + (pct * 100).toFixed(1) + '%"></div><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></div>' +
+      '<div class="next-line">Next feed around ' + fmtTime(next) + ' (' + (over ? fmtDur(now - next) + ' overdue' : 'in ' + fmtDur(next - now)) + ')</div></section>';
+  } else {
+    html += '<section class="card status feed"><div class="label">' + ic('feed') + 'Last feed</div><div class="sub" style="margin-top:8px">' +
+      (isCozy() ? "Nothing yet today. Log the first feed when you're ready." : 'Nothing logged yet. First feed counts.') + '</div></section>';
+  }
+
+  // Diaper + sleep cards
+  const lastSleepEnd = S.events.find((e) => e.type === 'sleep' && e.ended_at);
+  let sleepBig, sleepSub;
+  if (sleepOpen) { sleepBig = 'Asleep ' + fmtDur(now - new Date(sleepOpen.started_at).getTime()); sleepSub = 'Since ' + fmtTime(sleepOpen.started_at); }
+  else if (lastSleepEnd) { sleepBig = 'Awake ' + fmtDur(now - new Date(lastSleepEnd.ended_at).getTime()); sleepSub = 'Woke at ' + fmtTime(lastSleepEnd.ended_at); }
+  else { sleepBig = 'Awake'; sleepSub = 'No sleep logged'; }
+
+  html += '<div class="grid2">' +
+    '<section class="card status diaper compact"><div class="label">' + ic('diaper') + 'Last diaper</div>' +
+    (ld ? '<div class="big">' + fmtDur(now - new Date(ld.started_at).getTime()) + '</div><div class="sub">' + cap(ld.diaper_kind) + (ld.created_by_name ? ' · ' + esc(ld.created_by_name) : '') + '</div>'
+        : '<div class="sub" style="margin-top:8px">None yet</div>') + '</section>' +
+    '<section class="card status sleep compact">' + (sleepOpen ? MOON : SUN) + '<div class="label">' + ic('sleep') + 'Sleep</div>' +
+    '<div class="big" style="font-size:calc(var(--big)*.42)">' + sleepBig + '</div><div class="sub">' + sleepSub + '</div>' +
+    '<button class="btn sleep-btn' + (sleepOpen ? '' : ' primary') + '" data-act="sleep-toggle">' + (sleepOpen ? 'Stop' : 'Start') + '</button></section></div>';
+
+  if (tummyOpen) {
+    html += '<div class="banner"><span>' + ic('tummy') + ' Tummy time ' + fmtDur(now - new Date(tummyOpen.started_at).getTime()) + '</span><button class="btn primary" data-act="tummy-stop">Stop</button></div>';
+  }
+
+  // Today's totals
+  const t = dayStats(startOfDay(new Date()));
+  const sl = t.sleepMs;
+  html += '<section class="card"><h2>Today</h2><div class="totals">' +
+    '<div><b>' + t.feeds + ' · ' + fmtOz(t.oz) + ' oz</b><span>Feeds</span></div>' +
+    '<div><b>' + fmtDur(sl) + '</b><span>Sleep</span></div>' +
+    '<div><b>' + t.wet + '</b><span>Wet diapers</span></div>' +
+    '<div><b>' + t.dirty + '</b><span>Dirty diapers</span></div></div></section>';
+
+  // Next up
+  const up = S.tasks.filter((x) => !x.completed_at).sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).slice(0, 2);
+  html += '<section class="card"><h2>Next up</h2>' + (up.length
+    ? '<div class="rows">' + up.map((x) => {
+        const ms = new Date(x.due_at) - now;
+        return '<div class="row' + (ms < 0 ? ' overdue' : '') + '" style="min-height:52px"><div class="mid"><b>' + esc(x.title) + '</b><span class="cd">' + fmtCountdown(ms) + '</span></div><div class="time">' + fmtTime(x.due_at) + '</div></div>';
+      }).join('') + '</div>'
+    : '<div class="empty">No tasks yet.</div>') + '</section>';
+  return html;
+}
+
+const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
+
+/* ---------- Timeline ---------- */
+function eventTitle(e) {
+  return ({ feed: 'Feed', diaper: 'Diaper', sleep: 'Sleep', tummy: 'Tummy time', med: e.label || 'Medication', measure: 'Weight and length', note: e.label || 'Note' })[e.type];
+}
+function eventDetail(e) {
+  if (e.type === 'feed') return fmtOz(e.amount_oz || 0) + ' oz' + (e.notes ? ' · ' + e.notes : '');
+  if (e.type === 'diaper') return cap(e.diaper_kind) + (e.notes ? ' · ' + e.notes : '');
+  if (e.type === 'sleep' || e.type === 'tummy') {
+    const end = e.ended_at ? new Date(e.ended_at).getTime() : Date.now();
+    return (e.ended_at ? fmtDur(end - new Date(e.started_at).getTime()) : 'Running, ' + fmtDur(end - new Date(e.started_at).getTime())) + (e.notes ? ' · ' + e.notes : '');
+  }
+  if (e.type === 'measure') return [e.weight_lb ? e.weight_lb + ' lb' : '', e.length_in ? e.length_in + ' in' : ''].filter(Boolean).join(' · ') + (e.notes ? ' · ' + e.notes : '');
+  return e.notes || '';
+}
+
+function timelineHtml() {
+  const from = S.tlDay.getTime(), to = from + DAY;
+  const evs = S.events.filter((e) => { const t = new Date(e.started_at).getTime(); return t >= from && t < to; });
+  const today = startOfDay(new Date()).getTime() === from;
+  let html = '<div class="daynav"><button class="iconbtn" data-act="day-prev" aria-label="Previous day">' + ic('chevL') + '</button>' +
+    '<label class="date">' + (today ? 'Today, ' + fmtShort(S.tlDay) : fmtDay(S.tlDay)) + '<input type="date" id="dayjump" aria-label="Jump to date" value="' + dayKey(S.tlDay) + '"></label>' +
+    '<button class="iconbtn" data-act="day-next" aria-label="Next day"' + (today ? ' disabled style="opacity:.3"' : '') + '>' + ic('chevR') + '</button></div>';
+  if (!evs.length) {
+    html += '<div class="card empty">' + (today ? (isCozy() ? "Nothing yet today. Log the first feed when you're ready." : 'Nothing logged yet. First feed counts.') : 'Nothing logged this day.') + '</div>';
+  } else {
+    html += '<section class="card"><div class="rows">' + evs.map((e) => {
+      const time = (e.type === 'sleep' || e.type === 'tummy') ? fmtTime(e.started_at) + (e.ended_at ? ' – ' + fmtTime(e.ended_at) : ' – now') : fmtTime(e.started_at);
+      return '<button class="row" data-act="edit" data-id="' + e.id + '"><span class="ico">' + ic(e.type) + '</span><span class="mid"><b>' + esc(eventTitle(e)) + '</b><span>' + esc(eventDetail(e)) + '</span></span><span class="time">' + time + (e.created_by_name ? '<br>' + esc(e.created_by_name) : '') + '</span></button>';
+    }).join('') + '</div></section>';
+  }
+  return html;
+}
+
+/* ---------- Tasks ---------- */
+function recurLabel(t) {
+  if (t.recurrence === 'daily') return 'Daily';
+  if (t.recurrence === 'weekly') return 'Weekly';
+  if (t.recurrence === 'every_n_hours') return 'Every ' + (t.interval_hours || '?') + ' h';
+  return '';
+}
+function tasksHtml() {
+  const now = Date.now();
+  const open = S.tasks.filter((t) => !t.completed_at).sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
+  const done = S.tasks.filter((t) => t.completed_at).sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at)).slice(0, 5);
+  let html = '<button class="btn primary big" data-act="task-add">' + ic('plus') + 'Add task</button>';
+  html += '<section class="card"><h2>Upcoming</h2>' + (open.length ? '<div class="rows">' + open.map((t) => {
+    const ms = new Date(t.due_at) - now;
+    return '<div class="row' + (ms < 0 ? ' overdue' : '') + '"><button class="iconbtn" style="border:1px solid var(--line)" data-act="task-check" data-id="' + t.id + '" aria-label="Mark ' + esc(t.title) + ' done">' + ic('check') + '</button>' +
+      '<div class="mid"><b>' + esc(t.title) + '</b><span><span class="cd">' + fmtCountdown(ms) + '</span> · ' + fmtDateTime(t.due_at) + (recurLabel(t) ? ' · ' + recurLabel(t) : '') + '</span></div>' +
+      '<button class="iconbtn" data-act="task-cal" data-id="' + t.id + '" aria-label="Add ' + esc(t.title) + ' to calendar">' + ic('calendar') + '</button></div>';
+  }).join('') + '</div>' : '<div class="empty">Nothing scheduled. Add a pediatrician visit or a daily vitamin D.</div>') + '</section>';
+  if (done.length) {
+    html += '<section class="card"><h2>Done</h2><div class="rows">' + done.map((t) =>
+      '<div class="row done" style="min-height:48px"><div class="mid"><b>' + esc(t.title) + '</b><span>' + fmtDateTime(t.completed_at) + '</span></div></div>').join('') + '</div></section>';
+  }
+  return html;
+}
+
+function nextDue(t) {
+  if (t.recurrence === 'none') return null;
+  const step = t.recurrence === 'daily' ? DAY : t.recurrence === 'weekly' ? 7 * DAY : (t.interval_hours || 4) * HR;
+  let d = new Date(t.due_at).getTime() + step;
+  const now = Date.now();
+  while (d <= now) d += step;
+  return new Date(d);
+}
+function completeTask(id) {
+  const t = S.tasks.find((x) => x.id === id);
+  if (!t || t.completed_at) return;
+  const nowIso = new Date().toISOString();
+  patchTask(id, { completed_at: nowIso });
+  if (t.log_as === 'med') addEvent({ type: 'med', label: t.title, started_at: nowIso });
+  const nx = nextDue(t);
+  if (nx) addTask({ title: t.title, due_at: nx.toISOString(), recurrence: t.recurrence, interval_hours: t.interval_hours, log_as: t.log_as });
+  toast(nx ? 'Done. Next one is set.' : 'Done');
+}
+
+/* ---------- Trends ---------- */
+function lastDays(n) {
+  const out = [];
+  const today = startOfDay(new Date());
+  for (let i = n - 1; i >= 0; i--) out.push(new Date(today.getTime() - i * DAY));
+  return out;
+}
+function barChart(days, partsFn, labels) {
+  const W = 320, H = 150, base = 120, maxH = 90;
+  const data = days.map((d) => partsFn(d));
+  const totals = data.map((p) => p.reduce((a, b) => a + b, 0));
+  const max = Math.max(1, ...totals);
+  const bw = 28, step = (W - 20) / days.length;
+  let g = '';
+  data.forEach((parts, i) => {
+    const x = 10 + i * step + (step - bw) / 2;
+    let y = base;
+    parts.forEach((v, pi) => {
+      const h = (v / max) * maxH;
+      if (h > 0) { y -= h; g += '<rect class="p' + pi + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw + '" height="' + h.toFixed(1) + '" rx="' + (isCozy() ? 8 : 2) + '"/>'; }
+    });
+    if (totals[i] > 0) g += '<text class="val" x="' + (x + bw / 2).toFixed(1) + '" y="' + (y - 4).toFixed(1) + '" text-anchor="middle">' + labels.fmt(totals[i], parts) + '</text>';
+    g += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (base + 16) + '" text-anchor="middle">' + days[i].toLocaleDateString([], { weekday: 'short' }) + '</text>';
+  });
+  return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(labels.aria) + '">' + g + '</svg>';
+}
+
+function rangeInfo(range) {
+  const now = Date.now();
+  const dol = dayOfLife();
+  const days = range === '24h' ? 1 : Math.min(7, Math.max(1, dol || 7));
+  return { from: now - (range === '24h' ? DAY : 7 * DAY), now, days, label: range === '24h' ? 'Last 24 hours' : 'Last 7 days' };
+}
+function buildSummary(range) {
+  const r = rangeInfo(range);
+  const evs = S.events.filter((e) => new Date(e.started_at).getTime() >= r.from);
+  const feeds = evs.filter((e) => e.type === 'feed');
+  const diapers = evs.filter((e) => e.type === 'diaper');
+  const wet = diapers.filter((e) => e.diaper_kind === 'wet' || e.diaper_kind === 'both').length;
+  const dirty = diapers.filter((e) => e.diaper_kind === 'dirty' || e.diaper_kind === 'both').length;
+  const oz = feeds.reduce((a, e) => a + (+e.amount_oz || 0), 0);
+  const sleepMs = S.events.filter((e) => e.type === 'sleep').reduce((a, e) => a + overlap(e, r.from, r.now), 0);
+  const per = (n) => (n / r.days).toFixed(1);
+  const dol = dayOfLife();
+  const lines = [
+    babyName() + ': ' + r.label.toLowerCase() + ', as of ' + fmtDateTime(new Date()) + (dol ? ' (day ' + dol + ' of life)' : ''),
+    'Feeds: ' + feeds.length + ' total, ' + fmtOz(oz) + ' oz' + (feeds.length ? ', ' + fmtOz(oz / feeds.length) + ' oz per feed' : '') + (r.days > 1 || true ? ', ' + per(feeds.length) + ' per day' : ''),
+    'Wet diapers: ' + wet + ' (' + per(wet) + ' per day)',
+    'Dirty diapers: ' + dirty + ' (' + per(dirty) + ' per day)',
+    'Sleep: ' + (sleepMs / HR).toFixed(1) + ' h total (' + (sleepMs / HR / r.days).toFixed(1) + ' h per day)'
+  ];
+  const meas = S.events.filter((e) => e.type === 'measure').slice().reverse();
+  if (meas.length) {
+    lines.push('Weight and length:');
+    meas.forEach((m) => lines.push('  ' + fmtShort(m.started_at) + ': ' + [m.weight_lb ? m.weight_lb + ' lb' : '', m.length_in ? m.length_in + ' in' : ''].filter(Boolean).join(', ')));
+  }
+  return lines.join('\n');
+}
+
+function trendsHtml() {
+  const days = lastDays(7);
+  const stats = days.map((d) => dayStats(d));
+  const idx = (d) => days.findIndex((x) => x.getTime() === d.getTime());
+  let html = '';
+  const dol = dayOfLife();
+  if (dol) {
+    const today = stats[6];
+    const target = dol <= 5 ? dol : 6;
+    const ok = today.wet >= target;
+    html += '<section class="card"><h2>Wet diapers today</h2><div class="target"><span class="dot' + (ok ? '' : ' amber') + '"></span><div><b>' + today.wet + ' of ' + target + (dol <= 5 ? '' : '+') + '</b><div class="note-small">' + (ok ? 'On track for day ' + dol + '.' : 'Not at the day-' + dol + ' minimum yet. The day is not over.') + '</div></div></div>' +
+      '<p class="note-small" style="margin:10px 0 0">General guidance: about 1 wet diaper on day 1, rising by one a day to 6 or more from day 6. Stools turn yellow around day 5. Call the pediatrician with any concerns.</p></section>';
+  }
+  html += '<section class="card"><h2>Feeds per day</h2>' +
+    barChart(days, (d) => [stats[idx(d)].oz], { aria: 'Total ounces per day, last 7 days', fmt: (t) => fmtOz(t) }) +
+    '<div class="legend"><span>Total oz per day</span></div></section>';
+  html += '<section class="card"><h2>Diapers per day</h2>' +
+    barChart(days, (d) => [stats[idx(d)].wet, stats[idx(d)].dirty], { aria: 'Wet and dirty diapers per day, last 7 days', fmt: (t) => t }) +
+    '<div class="legend"><span><i style="background:var(--accent)"></i>Wet</span><span><i style="background:var(--accent-2)"></i>Dirty</span></div></section>';
+  html += '<section class="card"><h2>Sleep per day</h2>' +
+    barChart(days, (d) => [stats[idx(d)].sleepMs / HR], { aria: 'Hours of sleep per day, last 7 days', fmt: (t) => t.toFixed(1) }) +
+    '<div class="legend"><span>Hours per day</span></div></section>';
+  html += '<section class="card"><h2>Pediatrician summary</h2><div class="chips"><button class="chip' + (S.sumRange === '24h' ? ' on' : '') + '" data-act="sum-range" data-r="24h">Last 24 hours</button><button class="chip' + (S.sumRange === '7d' ? ' on' : '') + '" data-act="sum-range" data-r="7d">Last 7 days</button></div>' +
+    '<pre class="summary">' + esc(buildSummary(S.sumRange)) + '</pre><button class="btn big" data-act="copy-summary">Copy summary</button></section>';
+  return html;
+}
+
+/* ---------- Login ---------- */
+function renderLogin() {
+  $('#app').innerHTML = '<div class="login"><h1>Baby tracker</h1><p class="muted" style="margin:0">Sign in with the account you were set up with.</p>' +
+    '<form id="loginform"><input type="email" id="le" placeholder="Email" autocomplete="username" autocapitalize="none" required aria-label="Email">' +
+    '<input type="password" id="lp" placeholder="Password" autocomplete="current-password" required aria-label="Password">' +
+    '<div class="err" id="lerr" role="alert"></div><button class="btn primary big" type="submit">Sign in</button></form></div>';
+  $('#loginform').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const btn = ev.target.querySelector('button');
+    btn.disabled = true;
+    const { error } = await sb.auth.signInWithPassword({ email: $('#le').value.trim(), password: $('#lp').value });
+    btn.disabled = false;
+    if (error) $('#lerr').textContent = error.message;
+  });
+}
+
+/* ============================================================
+   Sheets
+   ============================================================ */
+function openSheet(title, html, wire) {
+  closeSheet();
+  const root = $('#sheet-root');
+  root.innerHTML = '<div class="scrim" id="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(title) + '"><div class="head"><h2>' + esc(title) + '</h2><button class="iconbtn" data-sheet="close" aria-label="Close">' + ic('close') + '</button></div><div class="stack">' + html + '</div></div></div>';
+  const el = $('.sheet', root);
+  $('#scrim').addEventListener('click', (e) => { if (e.target.id === 'scrim') closeSheet(); });
+  el.addEventListener('click', (e) => { if (e.target.closest('[data-sheet="close"]')) closeSheet(); });
+  if (wire) wire(el, closeSheet);
+  return el;
+}
+function closeSheet() { $('#sheet-root').innerHTML = ''; }
+
+function timeField(label) {
+  return '<div class="field"><span>' + (label || 'Time') + '</span><div class="chips" id="tchips">' +
+    [0, 5, 10, 20, 30, 60].map((m) => '<button type="button" class="chip' + (m === 0 ? ' on' : '') + '" data-ago="' + m + '">' + (m ? m + ' min ago' : 'Now') + '</button>').join('') +
+    '</div><input type="datetime-local" id="tinput" aria-label="' + (label || 'Time') + '"></div>';
+}
+function wireTime(el, ctx) {
+  const inp = $('#tinput', el);
+  inp.value = toLocalInput(ctx.when);
+  el.addEventListener('click', (e) => {
+    const c = e.target.closest('[data-ago]');
+    if (!c) return;
+    ctx.when = new Date(Date.now() - (+c.dataset.ago) * MIN);
+    inp.value = toLocalInput(ctx.when);
+    el.querySelectorAll('[data-ago]').forEach((x) => x.classList.toggle('on', x === c));
+  });
+  inp.addEventListener('change', () => {
+    const d = new Date(inp.value);
+    if (!isNaN(d)) { ctx.when = d; el.querySelectorAll('[data-ago]').forEach((x) => x.classList.remove('on')); }
+  });
+}
+
+function feedSheet() {
+  const last = latest('feed');
+  const ctx = { oz: last && last.amount_oz ? +last.amount_oz : 2, when: new Date() };
+  openSheet('Log feed',
+    '<div class="stepper"><button class="btn round" data-s="dec" aria-label="Less formula">' + ic('minus') + '</button><div class="oz"><span id="oz">' + fmtOz(ctx.oz) + '</span><small>oz</small></div><button class="btn round" data-s="inc" aria-label="More formula">' + ic('plus') + '</button></div>' +
+    '<div class="chips">' + [1, 2, 3, 4].map((n) => '<button class="chip" data-oz="' + n + '">' + n + ' oz</button>').join('') + '</div>' +
+    timeField() +
+    '<label class="toggle"><input type="checkbox" id="spit"> Spit-up</label>' +
+    '<input type="text" id="note" placeholder="Note (optional)" aria-label="Note">' +
+    '<button class="btn primary big" data-s="save">Save feed</button>',
+    (el, close) => {
+      wireTime(el, ctx);
+      const show = () => { $('#oz', el).textContent = fmtOz(ctx.oz); };
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-s],[data-oz]');
+        if (!b) return;
+        if (b.dataset.oz) { ctx.oz = +b.dataset.oz; show(); }
+        else if (b.dataset.s === 'dec') { ctx.oz = Math.max(0, ctx.oz - 0.5); show(); }
+        else if (b.dataset.s === 'inc') { ctx.oz = ctx.oz + 0.5; show(); }
+        else if (b.dataset.s === 'save') {
+          const notes = [$('#spit', el).checked ? 'Spit-up' : '', $('#note', el).value.trim()].filter(Boolean).join('. ');
+          addEvent({ type: 'feed', amount_oz: ctx.oz, started_at: ctx.when.toISOString(), notes: notes || null });
+          close(); toast('Feed saved');
+        }
+      });
+    });
+}
+
+function diaperSheet() {
+  const ctx = { when: new Date() };
+  openSheet('Log diaper',
+    timeField() +
+    '<input type="text" id="note" placeholder="Note (color, rash)" aria-label="Note">' +
+    '<div class="kinds">' + ['wet', 'dirty', 'both'].map((k) => '<button class="btn primary" data-kind="' + k + '">' + ic('diaper', 28) + cap(k) + '</button>').join('') + '</div>' +
+    '<p class="note-small" style="margin:0">Tap a kind to save.</p>',
+    (el, close) => {
+      wireTime(el, ctx);
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-kind]');
+        if (!b) return;
+        addEvent({ type: 'diaper', diaper_kind: b.dataset.kind, started_at: ctx.when.toISOString(), notes: $('#note', el).value.trim() || null });
+        close(); toast('Diaper saved');
+      });
+    });
+}
+
+function toggleSleep() {
+  const open = openOf('sleep');
+  if (open) { patchEvent(open.id, { ended_at: new Date().toISOString() }); toast('Sleep stopped'); }
+  else { addEvent({ type: 'sleep', started_at: new Date().toISOString(), ended_at: null }); toast('Sleep started'); }
+}
+
+function moreSheet() {
+  const tummy = openOf('tummy');
+  openSheet('More',
+    '<div class="menu">' +
+    '<button class="btn" data-m="med">' + ic('med', 28) + 'Medication or vitamin</button>' +
+    (tummy ? '<button class="btn primary" data-m="tummy-stop">' + ic('tummy', 28) + 'Stop tummy time</button>' : '<button class="btn" data-m="tummy">' + ic('tummy', 28) + 'Start tummy time</button>') +
+    '<button class="btn" data-m="measure">' + ic('measure', 28) + 'Weight and length</button>' +
+    '<button class="btn" data-m="note">' + ic('note', 28) + 'Note</button>' +
+    '<button class="btn" data-m="past-sleep">' + ic('sleep', 28) + 'Add past sleep</button></div>',
+    (el, close) => {
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-m]');
+        if (!b) return;
+        const m = b.dataset.m;
+        if (m === 'tummy') { addEvent({ type: 'tummy', started_at: new Date().toISOString(), ended_at: null }); close(); toast('Tummy time started'); }
+        else if (m === 'tummy-stop') { stopTummy(); close(); }
+        else if (m === 'med') medSheet();
+        else if (m === 'measure') measureSheet();
+        else if (m === 'note') noteSheet();
+        else if (m === 'past-sleep') pastSleepSheet();
+      });
+    });
+}
+function stopTummy() {
+  const t = openOf('tummy');
+  if (t) { patchEvent(t.id, { ended_at: new Date().toISOString() }); toast('Tummy time stopped'); }
+}
+
+function medSheet() {
+  const ctx = { when: new Date() };
+  openSheet('Medication or vitamin',
+    '<div class="chips"><button class="chip" data-label="Vitamin D">Vitamin D</button></div>' +
+    '<label class="field">Name<input type="text" id="label" placeholder="e.g. Vitamin D" aria-label="Name"></label>' +
+    timeField() + '<input type="text" id="note" placeholder="Dose or note (optional)" aria-label="Dose or note">' +
+    '<button class="btn primary big" data-s="save">Save</button>',
+    (el, close) => {
+      wireTime(el, ctx);
+      el.addEventListener('click', (e) => {
+        const c = e.target.closest('[data-label]');
+        if (c) { $('#label', el).value = c.dataset.label; return; }
+        if (e.target.closest('[data-s="save"]')) {
+          const label = $('#label', el).value.trim();
+          if (!label) { toast('Add a name'); return; }
+          addEvent({ type: 'med', label, started_at: ctx.when.toISOString(), notes: $('#note', el).value.trim() || null });
+          close(); toast('Saved');
+        }
+      });
+    });
+}
+
+function measureSheet() {
+  const ctx = { when: new Date() };
+  openSheet('Weight and length',
+    '<div class="split"><label class="field">Weight (lb)<input type="number" inputmode="decimal" step="0.1" min="0" id="w" aria-label="Weight in pounds"></label>' +
+    '<label class="field">Length (in)<input type="number" inputmode="decimal" step="0.25" min="0" id="l" aria-label="Length in inches"></label></div>' +
+    timeField() + '<input type="text" id="note" placeholder="Note (optional)" aria-label="Note">' +
+    '<button class="btn primary big" data-s="save">Save</button>',
+    (el, close) => {
+      wireTime(el, ctx);
+      el.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-s="save"]')) return;
+        const w = parseFloat($('#w', el).value), l = parseFloat($('#l', el).value);
+        if (isNaN(w) && isNaN(l)) { toast('Add a weight or a length'); return; }
+        addEvent({ type: 'measure', weight_lb: isNaN(w) ? null : w, length_in: isNaN(l) ? null : l, started_at: ctx.when.toISOString(), notes: $('#note', el).value.trim() || null });
+        close(); toast('Saved');
+      });
+    });
+}
+
+function noteSheet() {
+  const ctx = { when: new Date() };
+  openSheet('Note',
+    '<input type="text" id="label" placeholder="Title (optional)" aria-label="Title">' +
+    '<label class="field">Note<textarea id="note" aria-label="Note"></textarea></label>' + timeField() +
+    '<button class="btn primary big" data-s="save">Save note</button>',
+    (el, close) => {
+      wireTime(el, ctx);
+      el.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-s="save"]')) return;
+        const notes = $('#note', el).value.trim();
+        if (!notes && !$('#label', el).value.trim()) { toast('Write something first'); return; }
+        addEvent({ type: 'note', label: $('#label', el).value.trim() || null, notes: notes || null, started_at: ctx.when.toISOString() });
+        close(); toast('Saved');
+      });
+    });
+}
+
+function pastSleepSheet() {
+  const end = new Date(), start = new Date(Date.now() - HR);
+  openSheet('Add past sleep',
+    '<label class="field">Fell asleep<input type="datetime-local" id="ps" value="' + toLocalInput(start) + '"></label>' +
+    '<label class="field">Woke up<input type="datetime-local" id="pe" value="' + toLocalInput(end) + '"></label>' +
+    '<button class="btn primary big" data-s="save">Save sleep</button>',
+    (el, close) => {
+      el.addEventListener('click', (e) => {
+        if (!e.target.closest('[data-s="save"]')) return;
+        const s = new Date($('#ps', el).value), en = new Date($('#pe', el).value);
+        if (isNaN(s) || isNaN(en) || en <= s) { toast('Wake time must be after the start'); return; }
+        addEvent({ type: 'sleep', started_at: s.toISOString(), ended_at: en.toISOString() });
+        close(); toast('Sleep saved');
+      });
+    });
+}
+
+/* ---------- Edit an event ---------- */
+function editSheet(id) {
+  const e = S.events.find((x) => x.id === id);
+  if (!e) return;
+  const ranged = e.type === 'sleep' || e.type === 'tummy';
+  let fields = '';
+  if (e.type === 'feed') fields += '<label class="field">Amount (oz)<input type="number" inputmode="decimal" step="0.5" min="0" id="f-oz" value="' + (e.amount_oz ?? '') + '"></label>';
+  if (e.type === 'diaper') fields += '<div class="chips" id="f-kind">' + ['wet', 'dirty', 'both'].map((k) => '<button type="button" class="chip' + (e.diaper_kind === k ? ' on' : '') + '" data-k="' + k + '">' + cap(k) + '</button>').join('') + '</div>';
+  if (e.type === 'med' || e.type === 'note') fields += '<label class="field">' + (e.type === 'med' ? 'Name' : 'Title') + '<input type="text" id="f-label" value="' + esc(e.label || '') + '"></label>';
+  if (e.type === 'measure') fields += '<div class="split"><label class="field">Weight (lb)<input type="number" inputmode="decimal" step="0.1" id="f-w" value="' + (e.weight_lb ?? '') + '"></label><label class="field">Length (in)<input type="number" inputmode="decimal" step="0.25" id="f-l" value="' + (e.length_in ?? '') + '"></label></div>';
+  fields += '<label class="field">' + (ranged ? 'Start' : 'Time') + '<input type="datetime-local" id="f-start" value="' + toLocalInput(e.started_at) + '"></label>';
+  if (ranged) fields += '<label class="field">End (leave empty if still running)<input type="datetime-local" id="f-end" value="' + (e.ended_at ? toLocalInput(e.ended_at) : '') + '"></label>';
+  fields += '<label class="field">Notes<textarea id="f-notes">' + esc(e.notes || '') + '</textarea></label>';
+  fields += '<p class="note-small" style="margin:0">Logged by ' + esc(e.created_by_name || 'unknown') + '</p>';
+  let kind = e.diaper_kind;
+
+  openSheet('Edit ' + eventTitle(e).toLowerCase(),
+    fields + '<button class="btn primary big" data-s="save">Save changes</button><div id="delzone"><button class="btn danger big" data-s="del">' + ic('trash') + 'Delete</button></div>',
+    (el, close) => {
+      el.addEventListener('click', (ev) => {
+        const k = ev.target.closest('[data-k]');
+        if (k) { kind = k.dataset.k; el.querySelectorAll('[data-k]').forEach((x) => x.classList.toggle('on', x === k)); return; }
+        const b = ev.target.closest('[data-s]');
+        if (!b) return;
+        if (b.dataset.s === 'del') {
+          $('#delzone', el).innerHTML = '<p style="margin:0 0 10px">Delete this entry?</p><div class="confirm"><button class="btn" data-s="cancel-del">Cancel</button><button class="btn danger" data-s="confirm-del">Yes, delete</button></div>';
+        } else if (b.dataset.s === 'cancel-del') {
+          $('#delzone', el).innerHTML = '<button class="btn danger big" data-s="del">' + ic('trash') + 'Delete</button>';
+        } else if (b.dataset.s === 'confirm-del') {
+          removeEvent(id); close(); toast('Deleted');
+        } else if (b.dataset.s === 'save') {
+          const patch = { notes: $('#f-notes', el).value.trim() || null };
+          const st = new Date($('#f-start', el).value);
+          if (isNaN(st)) { toast('Check the time'); return; }
+          patch.started_at = st.toISOString();
+          if (ranged) {
+            const v = $('#f-end', el).value;
+            if (v) {
+              const en = new Date(v);
+              if (isNaN(en) || en <= st) { toast('End must be after the start'); return; }
+              patch.ended_at = en.toISOString();
+            } else {
+              const other = S.events.find((x) => x.type === e.type && !x.ended_at && x.id !== id);
+              if (other) { toast('Another ' + (e.type === 'sleep' ? 'sleep' : 'tummy time') + ' is already running'); return; }
+              patch.ended_at = null;
+            }
+          }
+          if (e.type === 'feed') { const v = parseFloat($('#f-oz', el).value); patch.amount_oz = isNaN(v) ? null : v; }
+          if (e.type === 'diaper') patch.diaper_kind = kind;
+          if (e.type === 'med' || e.type === 'note') patch.label = $('#f-label', el).value.trim() || null;
+          if (e.type === 'measure') { const w = parseFloat($('#f-w', el).value), l = parseFloat($('#f-l', el).value); patch.weight_lb = isNaN(w) ? null : w; patch.length_in = isNaN(l) ? null : l; }
+          patchEvent(id, patch); close(); toast('Saved');
+        }
+      });
+    });
+}
+
+/* ---------- Tasks: add + calendar ---------- */
+function taskSheet() {
+  const nextHour = new Date(Math.ceil((Date.now() + 5 * MIN) / HR) * HR);
+  const ctx = { log_as: null };
+  openSheet('Add task',
+    '<div class="chips">' + ['Pediatrician visit', 'Weight check', 'Vitamin D', 'Custom'].map((p) => '<button class="chip" data-preset="' + p + '">' + p + '</button>').join('') + '</div>' +
+    '<label class="field">Title<input type="text" id="t-title" aria-label="Title"></label>' +
+    '<label class="field">Due<input type="datetime-local" id="t-due" value="' + toLocalInput(nextHour) + '"></label>' +
+    '<label class="field">Repeat<select id="t-rec"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="every_n_hours">Every N hours</option></select></label>' +
+    '<label class="field" id="t-int-wrap" hidden>Hours between<input type="number" inputmode="numeric" min="1" step="1" id="t-int" value="4"></label>' +
+    '<label class="toggle"><input type="checkbox" id="t-med"> Log as medication when checked off</label>' +
+    '<button class="btn primary big" data-s="save">Save task</button>',
+    (el, close) => {
+      const rec = $('#t-rec', el);
+      rec.addEventListener('change', () => { $('#t-int-wrap', el).hidden = rec.value !== 'every_n_hours'; });
+      el.addEventListener('click', (e) => {
+        const p = e.target.closest('[data-preset]');
+        if (p) {
+          const v = p.dataset.preset;
+          el.querySelectorAll('[data-preset]').forEach((x) => x.classList.toggle('on', x === p));
+          if (v === 'Custom') { $('#t-title', el).value = ''; $('#t-title', el).focus(); return; }
+          $('#t-title', el).value = v;
+          if (v === 'Vitamin D') { rec.value = 'daily'; $('#t-med', el).checked = true; }
+          else { rec.value = 'none'; $('#t-med', el).checked = false; }
+          $('#t-int-wrap', el).hidden = true;
+          return;
+        }
+        if (!e.target.closest('[data-s="save"]')) return;
+        const title = $('#t-title', el).value.trim();
+        const due = new Date($('#t-due', el).value);
+        if (!title) { toast('Add a title'); return; }
+        if (isNaN(due)) { toast('Check the due time'); return; }
+        const recurrence = rec.value;
+        const n = parseInt($('#t-int', el).value, 10);
+        if (recurrence === 'every_n_hours' && !(n >= 1)) { toast('Hours between must be 1 or more'); return; }
+        addTask({ title, due_at: due.toISOString(), recurrence, interval_hours: recurrence === 'every_n_hours' ? n : null, log_as: $('#t-med', el).checked ? 'med' : null });
+        close(); toast('Task added');
+      });
+    });
+}
+
+const icsStamp = (d) => new Date(d).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+function rruleFor(t) {
+  if (t.recurrence === 'daily') return 'FREQ=DAILY';
+  if (t.recurrence === 'weekly') return 'FREQ=WEEKLY';
+  if (t.recurrence === 'every_n_hours') return 'FREQ=HOURLY;INTERVAL=' + (t.interval_hours || 4);
+  return '';
+}
+const icsEsc = (s) => String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+
+function calendarSheet(id) {
+  const t = S.tasks.find((x) => x.id === id);
+  if (!t) return;
+  const start = new Date(t.due_at), end = new Date(start.getTime() + 15 * MIN);
+  const details = 'From the ' + babyName() + ' tracker';
+  const rr = rruleFor(t);
+  openSheet('Add to calendar',
+    '<div class="stack"><button class="btn big" data-c="google">Google Calendar</button><button class="btn big" data-c="apple">Apple Calendar (.ics file)</button></div>' +
+    '<p class="note-small" style="margin:0">Apple Reminders and Google Tasks have no reliable link method, so we use Calendar.</p>',
+    (el, close) => {
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-c]');
+        if (!b) return;
+        if (b.dataset.c === 'google') {
+          const url = 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(t.title) + '&dates=' + icsStamp(start) + '/' + icsStamp(end) + '&details=' + encodeURIComponent(details) + (rr ? '&recur=' + encodeURIComponent('RRULE:' + rr) : '');
+          window.open(url, '_blank', 'noopener');
+        } else {
+          const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Baby tracker//EN', 'CALSCALE:GREGORIAN', 'BEGIN:VEVENT',
+            'UID:' + t.id + '@baby-tracker', 'DTSTAMP:' + icsStamp(new Date()), 'DTSTART:' + icsStamp(start), 'DTEND:' + icsStamp(end),
+            'SUMMARY:' + icsEsc(t.title), 'DESCRIPTION:' + icsEsc(details)];
+          if (rr) lines.push('RRULE:' + rr);
+          lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEsc(t.title), 'TRIGGER:-PT10M', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR');
+          const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = (t.title.replace(/[^\w-]+/g, '-').toLowerCase() || 'task') + '.ics';
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        }
+        close();
+      });
+    });
+}
+
+/* ---------- Settings + look ---------- */
+function lookHtml(current) {
+  return '<div class="stack" id="looks">' + THEMES.map((t) =>
+    '<button class="btn' + (current === t[0] ? ' primary' : '') + '" data-look="' + t[0] + '" style="justify-content:space-between"><span>' + t[1] + '</span><span style="font-weight:400;font-size:14px">' + t[2] + '</span></button>').join('') + '</div>';
+}
+function wireLook(el, onPick) {
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-look]');
+    if (!b) return;
+    ls.set('bt_theme', b.dataset.look);
+    applyTheme();
+    if (onPick) onPick();
+  });
+}
+function lookSheet() {
+  openSheet('Pick a look', '<p class="note-small" style="margin:0">This is saved on this phone only. Change it any time in Settings.</p>' + lookHtml(ls.get('bt_theme', '')),
+    (el, close) => wireLook(el, () => { close(); render(); }));
+}
+
+function settingsSheet() {
+  const birth = S.settings.birth_datetime ? toLocalInput(S.settings.birth_datetime) : '';
+  openSheet('Settings',
+    '<label class="field">Baby name<input type="text" id="s-name" value="' + esc(S.settings.baby_name || '') + '" placeholder="Baby"></label>' +
+    '<label class="field">Birth date and time<input type="datetime-local" id="s-birth" value="' + birth + '"></label>' +
+    '<label class="field">Target hours between feeds<input type="number" inputmode="decimal" step="0.25" min="1" id="s-int" value="' + esc(S.settings.feed_interval_target_hours || '3') + '"></label>' +
+    '<label class="field">Your display name (this phone)<input type="text" id="s-me" value="' + esc(ls.get('bt_name', '')) + '" placeholder="' + esc(S.user.email.split('@')[0]) + '"></label>' +
+    '<div class="field"><span>Look (this phone)</span>' + lookHtml(ls.get('bt_theme', 'night-shift')) + '</div>' +
+    '<button class="btn primary big" data-s="save">Save settings</button>' +
+    '<button class="btn ghost big" data-s="signout">Sign out</button>',
+    (el, close) => {
+      wireLook(el, () => { render(); el.querySelectorAll('[data-look]').forEach((x) => x.classList.toggle('primary', x.dataset.look === ls.get('bt_theme', 'night-shift'))); });
+      el.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-s]');
+        if (!b) return;
+        if (b.dataset.s === 'signout') { close(); await sb.auth.signOut(); return; }
+        if (b.dataset.s === 'save') {
+          setSetting('baby_name', $('#s-name', el).value.trim());
+          const bd = new Date($('#s-birth', el).value);
+          if (!isNaN(bd)) setSetting('birth_datetime', bd.toISOString());
+          const iv = parseFloat($('#s-int', el).value);
+          if (iv >= 1) setSetting('feed_interval_target_hours', iv);
+          ls.set('bt_name', $('#s-me', el).value.trim());
+          close(); render(); toast('Settings saved');
+        }
+      });
+    });
+}
+
+/* ============================================================
+   Actions (delegated)
+   ============================================================ */
+const actions = {
+  tab: (t) => { S.tab = t.dataset.tab; render(); const m = $('#main'); if (m) m.scrollTop = 0; },
+  settings: settingsSheet,
+  feed: feedSheet,
+  diaper: diaperSheet,
+  more: moreSheet,
+  'sleep-toggle': toggleSleep,
+  'tummy-stop': stopTummy,
+  edit: (t) => editSheet(t.dataset.id),
+  'day-prev': () => { S.tlDay = new Date(S.tlDay.getTime() - DAY); S.tlDay = startOfDay(S.tlDay); render(); },
+  'day-next': () => {
+    const n = startOfDay(new Date(S.tlDay.getTime() + DAY + 3 * HR));
+    if (n.getTime() <= startOfDay(new Date()).getTime()) { S.tlDay = n; render(); }
+  },
+  'task-add': taskSheet,
+  'task-check': (t) => completeTask(t.dataset.id),
+  'task-cal': (t) => calendarSheet(t.dataset.id),
+  'sum-range': (t) => { S.sumRange = t.dataset.r; render(); },
+  'copy-summary': async () => {
+    const text = buildSummary(S.sumRange);
+    try { await navigator.clipboard.writeText(text); toast('Summary copied'); }
+    catch (e) {
+      const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); toast('Summary copied'); } catch (e2) { toast('Could not copy'); }
+      ta.remove();
+    }
+  }
+};
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#sheet-root')) return;
+  const t = e.target.closest('[data-act]');
+  if (!t || t.disabled) return;
+  const fn = actions[t.dataset.act];
+  if (fn) fn(t, e);
+});
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'dayjump' && e.target.value) {
+    const [y, m, d] = e.target.value.split('-').map(Number);
+    const picked = new Date(y, m - 1, d);
+    const today = startOfDay(new Date());
+    S.tlDay = picked > today ? today : picked;
+    render();
+  }
+});
+
+/* ============================================================
+   Boot
+   ============================================================ */
+async function start() {
+  if (S.started) return;
+  S.started = true;
+  loadCache();
+  render();
+  await flush();
+  await loadAll();
+  subscribe();
+  render();
+  if (!ls.get('bt_theme', '')) lookSheet();
+}
+function stop() {
+  S.started = false;
+  if (S.channel) { sb.removeChannel(S.channel); S.channel = null; }
+  S.events = []; S.tasks = []; S.settings = {};
+  ls.set('bt_cache', 'null');
+  closeSheet(); render();
+}
+
+setInterval(() => {
+  applyTheme();
+  if (!S.user) return;
+  const a = document.activeElement;
+  if (a && a.closest && a.closest('#main') && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return;
+  render();
+}, 30000);
+
+window.addEventListener('online', () => { flush().then(() => S.user && loadAll().then(render)); updateOnlineUI(); });
+window.addEventListener('offline', updateOnlineUI);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && S.user && S.started) { flush().then(() => loadAll().then(render)); }
+});
+
+(async function boot() {
+  applyTheme();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  const { data } = await sb.auth.getSession();
+  S.user = data && data.session ? data.session.user : null;
+  sb.auth.onAuthStateChange((ev, session) => {
+    const had = !!S.user;
+    S.user = session ? session.user : null;
+    if (S.user && !had) setTimeout(start, 0);
+    if (!S.user && had) setTimeout(stop, 0);
+  });
+  if (S.user) start(); else render();
+})();
