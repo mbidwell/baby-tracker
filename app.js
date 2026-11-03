@@ -1,5 +1,30 @@
 'use strict';
 
+/* ---- Temporary layout diagnostics (round 4). Records viewport numbers from script start onward. ---- */
+const DBG = [];
+function dbgSnap(tag) {
+  const q = (s) => document.querySelector(s);
+  const m = q('#main'), nav = q('nav.tabs');
+  const vv = window.visualViewport;
+  const row = {
+    t: Math.round(performance.now()), tag,
+    iH: window.innerHeight, vv: vv ? Math.round(vv.height * 10) / 10 : null, sH: screen.height,
+    cH: document.documentElement.clientHeight,
+    mSH: m ? m.scrollHeight : null, mCH: m ? m.clientHeight : null,
+    nav: nav ? Math.round(nav.getBoundingClientRect().bottom * 10) / 10 : null
+  };
+  DBG.push(row);
+  if (DBG.length > 60) DBG.shift();
+  try { console.log('[bt-dbg]', JSON.stringify(row)); } catch (e) {}
+}
+dbgSnap('script start');
+document.addEventListener('DOMContentLoaded', () => dbgSnap('DOMContentLoaded'));
+window.addEventListener('load', () => { dbgSnap('load'); setTimeout(() => dbgSnap('load+300ms'), 300); });
+window.addEventListener('resize', () => dbgSnap('resize'));
+window.addEventListener('pageshow', () => dbgSnap('pageshow'));
+window.addEventListener('orientationchange', () => dbgSnap('orientationchange'));
+if (window.visualViewport) window.visualViewport.addEventListener('resize', () => dbgSnap('vv resize'));
+
 /* ============================================================
    Config
    ============================================================ */
@@ -482,6 +507,8 @@ function homeHtml() {
       (isCozy() ? "Nothing yet today. Log the first feed when you're ready." : 'Nothing logged yet. First feed counts.') + '</div></section>';
   }
 
+  html += nextUpHtml(now);
+
   // Diaper + sleep cards, same height
   const lastSleepEnd = S.events.find((e) => e.type === 'sleep' && e.ended_at);
   let sleepBig, sleepSub;
@@ -514,15 +541,27 @@ function homeHtml() {
     '<div><b>' + t.wet + '</b><span>Wet diapers</span></div>' +
     '<div><b>' + t.dirty + '</b><span>Dirty diapers</span></div></div></section>';
 
-  // Next up
-  const up = S.tasks.filter((x) => !x.completed_at).sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).slice(0, 2);
-  html += '<section class="card"><h2>Next up</h2>' + (up.length
-    ? '<div class="rows">' + up.map((x) => {
-        const ms = new Date(x.due_at) - now;
-        return '<div class="row' + (ms < 0 ? ' overdue' : '') + '" style="min-height:52px"><div class="mid"><b>' + esc(x.title) + '</b><span class="cd">' + fmtCountdown(ms) + '</span></div><div class="time">' + fmtTime(x.due_at) + '</div></div>';
-      }).join('') + '</div>'
-    : '<div class="empty">No tasks yet.</div>') + '</section>';
   return html;
+}
+
+/* ---------- Next up (Home) ---------- */
+function fmtOver(ms) {
+  const m = Math.max(1, Math.floor(ms / MIN));
+  if (m >= 2880) return Math.floor(m / 1440) + 'd';
+  const h = Math.floor(m / 60), r = m % 60;
+  return h > 0 ? h + 'h ' + pad2(r) + 'm' : m + 'm';
+}
+function nextUpHtml(now) {
+  const up = S.tasks.filter((x) => !x.completed_at).sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).slice(0, 2);
+  if (!up.length) return '';
+  return '<div class="nextup" aria-label="Next up">' + up.map((x) => {
+    const ms = new Date(x.due_at) - now;
+    const over = ms < 0, soon = !over && ms <= 30 * MIN;
+    const sub = over ? 'Overdue by ' + fmtOver(-ms) : fmtTime(x.due_at) + ', in ' + fmtDur(ms);
+    return '<div class="nrow' + (over ? ' over' : soon ? ' soon' : '') + '" role="button" tabindex="0" data-act="task-open" data-id="' + x.id + '">' +
+      '<div class="mid"><b>' + esc(x.title) + '</b><span class="cd">' + (over ? sub : sub) + '</span></div>' +
+      '<button class="checkbtn" data-act="task-check" data-id="' + x.id + '" aria-label="Mark ' + esc(x.title) + ' done">' + ic('check', 24) + '</button></div>';
+  }).join('') + '</div>';
 }
 
 /* ---------- Timeline ---------- */
@@ -1012,20 +1051,22 @@ function editSheet(id) {
 }
 
 /* ---------- Tasks: add + calendar ---------- */
-function taskSheet(preset) {
+function taskSheet(preset, existing) {
   preset = preset || {};
-  const nextHour = new Date(Math.ceil((Date.now() + 5 * MIN) / HR) * HR);
-  openSheet('Add task',
-    '<div class="chips scroll">' + TASK_PRESETS.map((p, i) => '<button class="chip' + (preset.label === p.label ? ' on' : '') + '" data-preset="' + i + '">' + p.label + '</button>').join('') + '</div>' +
+  if (existing) preset = { title: existing.title, rec: existing.recurrence, med: existing.log_as === 'med' };
+  const nextHour = existing ? new Date(existing.due_at) : new Date(Math.ceil((Date.now() + 5 * MIN) / HR) * HR);
+  openSheet(existing ? 'Edit task' : 'Add task',
+    (existing ? '' : '<div class="chips scroll">') + (existing ? '' : TASK_PRESETS.map((p, i) => '<button class="chip' + (preset.label === p.label ? ' on' : '') + '" data-preset="' + i + '">' + p.label + '</button>').join('') + '</div>') +
     '<label class="field">Title<input type="text" id="t-title" aria-label="Title" value="' + esc(preset.title || '') + '"></label>' +
     '<div class="field"><span>Due</span>' + dtHtml('td', nextHour) + '</div>' +
     '<label class="field">Repeat<select id="t-rec"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="every_n_hours">Every N hours</option></select></label>' +
-    '<label class="field" id="t-int-wrap" hidden>Hours between<input type="number" inputmode="numeric" min="1" step="1" id="t-int" value="4"></label>' +
+    '<label class="field" id="t-int-wrap" hidden>Hours between<input type="number" inputmode="numeric" min="1" step="1" id="t-int" value="' + ((existing && existing.interval_hours) || 4) + '"></label>' +
     '<label class="toggle"><input type="checkbox" id="t-med"' + (preset.med ? ' checked' : '') + '> Log as medication when checked off</label>' +
-    '<button class="btn primary big" data-s="save">Save task</button>',
+    '<button class="btn primary big" data-s="save">' + (existing ? 'Save changes' : 'Save task') + '</button>',
     (el, close) => {
       const rec = $('#t-rec', el);
       rec.value = preset.rec || 'none';
+      $('#t-int-wrap', el).hidden = rec.value !== 'every_n_hours';
       rec.addEventListener('change', () => { $('#t-int-wrap', el).hidden = rec.value !== 'every_n_hours'; });
       el.addEventListener('click', (e) => {
         const p = e.target.closest('[data-preset]');
@@ -1047,8 +1088,30 @@ function taskSheet(preset) {
         const recurrence = rec.value;
         const n = parseInt($('#t-int', el).value, 10);
         if (recurrence === 'every_n_hours' && !(n >= 1)) { toast('Hours between must be 1 or more'); return; }
-        addTask({ title, due_at: due.toISOString(), recurrence, interval_hours: recurrence === 'every_n_hours' ? n : null, log_as: $('#t-med', el).checked ? 'med' : null });
+        const row = { title, due_at: due.toISOString(), recurrence, interval_hours: recurrence === 'every_n_hours' ? n : null, log_as: $('#t-med', el).checked ? 'med' : null };
+        if (existing) { patchTask(existing.id, row); close(); toast('Task updated'); return; }
+        addTask(row);
         close(); toast('Task added');
+      });
+    });
+}
+
+function taskDetailSheet(id) {
+  const t = S.tasks.find((x) => x.id === id);
+  if (!t) return;
+  const ms = new Date(t.due_at) - Date.now();
+  openSheet(t.title,
+    '<p style="margin:0">' + fmtDateTime(t.due_at) + (recurLabel(t) ? ' · ' + recurLabel(t) : '') + '<br><span class="muted">' + (ms < 0 ? 'Overdue by ' + fmtOver(-ms) : 'In ' + fmtDur(ms)) + '</span></p>' +
+    '<button class="btn primary big" data-s="done">' + ic('check') + 'Mark done</button>' +
+    '<button class="btn big" data-s="edit">Edit</button>' +
+    '<button class="btn big" data-s="cal">' + ic('calendar') + 'Add to calendar</button>',
+    (el, close) => {
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-s]');
+        if (!b) return;
+        if (b.dataset.s === 'done') { close(); completeTask(id); }
+        else if (b.dataset.s === 'edit') taskSheet(null, t);
+        else if (b.dataset.s === 'cal') calendarSheet(id);
       });
     });
 }
@@ -1114,23 +1177,12 @@ function wireTone(el) {
 }
 /* Temporary layout readout (round 3). Remove once the numbers are in. */
 function layoutReadout() {
-  let probe = document.getElementById('sa-probe');
-  if (!probe) { probe = document.createElement('div'); probe.id = 'sa-probe'; document.body.appendChild(probe); }
+  dbgSnap('readout opened');
+  const probe = document.getElementById('sa-probe') || (() => { const d = document.createElement('div'); d.id = 'sa-probe'; document.body.appendChild(d); return d; })();
   const cs = getComputedStyle(probe);
-  const r = (sel) => { const n = document.querySelector(sel); return n ? Math.round(n.getBoundingClientRect().bottom * 10) / 10 : 'n/a'; };
-  const vv = window.visualViewport;
-  return [
-    'innerHeight: ' + innerHeight,
-    'visualViewport.height: ' + (vv ? Math.round(vv.height * 10) / 10 : 'n/a'),
-    'screen.height: ' + screen.height,
-    'safe-area bottom: ' + cs.paddingBottom + '   top: ' + cs.paddingTop,
-    'nav bottom: ' + r('nav.tabs'),
-    'quick bar bottom: ' + r('.quick'),
-    '#app bottom: ' + r('#app'),
-    'bottombar bottom: ' + r('.bottombar'),
-    'standalone: ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches),
-    'build: bt-v3'
-  ].join('\n');
+  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v4\n' +
+    'ms  event  innerH vvH screenH clientH mainSH/CH navBottom\n';
+  return head + DBG.map((r) => r.t + ' ' + r.tag + ' ' + r.iH + ' ' + r.vv + ' ' + r.sH + ' ' + r.cH + ' ' + r.mSH + '/' + r.mCH + ' ' + r.nav).join('\n');
 }
 function lookHtml(current) {
   return '<div class="stack" id="looks">' + THEMES.map((t) =>
@@ -1217,7 +1269,12 @@ const actions = {
   },
   'task-add': () => taskSheet(),
   'task-preset': (t) => { const p = TASK_PRESETS[+t.dataset.i]; taskSheet(p); },
-  'task-check': (t) => completeTask(t.dataset.id),
+  'task-open': (t) => taskDetailSheet(t.dataset.id),
+  'task-check': (t) => {
+    // Short pop animation (Cozy) before the task completes and the list re-renders.
+    t.classList.add('pop');
+    setTimeout(() => completeTask(t.dataset.id), 240);
+  },
   'task-cal': (t) => calendarSheet(t.dataset.id),
   'sum-range': (t) => { S.sumRange = t.dataset.r; render(); },
   'copy-summary': async () => {
@@ -1237,6 +1294,9 @@ document.addEventListener('click', (e) => {
   if (!t || t.disabled) return;
   const fn = actions[t.dataset.act];
   if (fn) fn(t, e);
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('nrow')) { e.preventDefault(); e.target.click(); }
 });
 document.addEventListener('change', (e) => {
   if (e.target.id === 'dayjump' && e.target.value) {
