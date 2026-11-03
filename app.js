@@ -866,7 +866,7 @@ function feedSheet() {
   openSheet('Log feed',
     (lastOz ? '<button class="chip" style="min-height:48px;align-self:flex-start" data-same="1">Same as last (' + fmtOz(lastOz) + ' oz)</button>' : '') +
     '<div class="stepper"><button class="btn round" data-s="dec" aria-label="Less formula">' + ic('minus') + '</button><div class="oz"><span id="oz">' + fmtOz(ctx.oz) + '</span><small>oz</small></div><button class="btn round" data-s="inc" aria-label="More formula">' + ic('plus') + '</button></div>' +
-    '<div class="chips scroll">' + [1, 2, 3, 4, 5, 6, 8].map((n) => '<button class="chip" data-oz="' + n + '">' + n + ' oz</button>').join('') + '</div>' +
+    '<div class="chips scroll">' + [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8].map((n) => '<button class="chip" data-oz="' + n + '">' + n + ' oz</button>').join('') + '</div>' +
     timeField() +
     '<label class="toggle"><input type="checkbox" id="spit"> Spit-up</label>' +
     '<input type="text" id="note" placeholder="Note (optional)" aria-label="Note">' +
@@ -1206,7 +1206,7 @@ function layoutReadout() {
   dbgSnap('readout opened');
   const probe = document.getElementById('sa-probe') || (() => { const d = document.createElement('div'); d.id = 'sa-probe'; document.body.appendChild(d); return d; })();
   const cs = getComputedStyle(probe);
-  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v6\n' +
+  const head = 'safe-area bottom ' + cs.paddingBottom + ', top ' + cs.paddingTop + '\nstandalone ' + (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches) + '   build bt-v8\n' +
     'viewport fix: ' + (document.documentElement.hasAttribute('data-vfix') ? 'ACTIVE (' + document.documentElement.style.getPropertyValue('--app-h') + ')' : 'not active') + '\n' +
     'ms  event  innerH vvH screenH clientH mainSH/CH navBottom appBottom fix\n';
   return head + DBG.map((r) => r.t + ' ' + r.tag + ' ' + r.iH + ' ' + r.vv + ' ' + r.sH + ' ' + r.cH + ' ' + r.mSH + '/' + r.mCH + ' ' + r.nav + ' ' + r.app + ' ' + r.fix).join('\n');

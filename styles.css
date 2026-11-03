@@ -284,7 +284,7 @@ pre.summary { white-space: pre-wrap; font-family: var(--font-body); font-size: 1
 @media (prefers-reduced-motion: reduce) { .checkbtn.pop { animation: none; } }
 .dbg { max-height: 220px; overflow: auto; }
 
-/* iOS standalone: when the layout viewport is shorter than the screen (see fixViewport in app.js), size to the screen. */
-html[data-vfix] #app, html[data-vfix] .scrim { bottom: auto; height: var(--app-h); }
-/* Sheets stay anchored to the layout viewport (iOS clips them there); their background is extended downward to cover the strip under it. */
+/* iOS standalone with a short layout viewport (see fixViewport in app.js). Measured on the phone: nothing paints below
+   innerHeight, so the shell stays inside it and the home-indicator padding (which would land in the unpainted strip) is dropped. */
+html[data-vfix] .bottombar { padding-bottom: 0; }
 html[data-vfix] .sheet { box-shadow: 0 80px 0 var(--bg); }
